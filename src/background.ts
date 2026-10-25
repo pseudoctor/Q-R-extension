@@ -7,7 +7,15 @@ import type {
   ExtensionResponse,
   SavedArticle,
   StorageState,
+  TrainingSession,
 } from './types'
+import {
+  buildGradePrompt,
+  buildStartPrompt,
+  parseAiJson,
+  validateAiFeedback,
+  validateAiQuestion,
+} from './ai/coach'
 import { providerById, normalizeAiSettings } from './ai/providers'
 import {
   readSavedArticles,
@@ -16,8 +24,10 @@ import {
   upsertSavedArticle,
 } from './storage/articles'
 import {
+  attachTrainingFeedback,
   getTrainingSession,
   removeTrainingSession,
+  setTrainingQuestion,
   startTrainingSession,
   submitTrainingAnswer,
 } from './storage/training'
@@ -223,6 +233,125 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
   }
 }
 
+type AiPrompt = {
+  system: string
+  user: string
+}
+
+const AI_REQUEST_TIMEOUT_MS = 90_000
+
+async function requestAiJson(
+  settings: AiSettings,
+  prompt: AiPrompt,
+): Promise<ExtensionResponse<unknown>> {
+  const normalized = normalizeAiSettings(settings)
+  if (!normalized.apiKey) {
+    return createError('AI_NOT_CONFIGURED', '请先在插件设置中填写 API key。')
+  }
+
+  const provider = providerById(normalized.provider)
+  let hasPermission = false
+  try {
+    hasPermission = await chrome.permissions.contains({ origins: [provider.hostPattern] })
+  } catch {
+    return createError('AI_PERMISSION_REQUIRED', '无法确认模型服务网络权限，请回到设置页重新授权。')
+  }
+  if (!hasPermission) {
+    return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
+  }
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS)
+  try {
+    const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${normalized.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: normalized.model,
+        messages: [
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user },
+        ],
+        temperature: 0,
+        max_tokens: 4_000,
+      }),
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      return createError('AI_REQUEST_FAILED', `模型服务返回 HTTP ${response.status}，请检查模型名称和 API key。`)
+    }
+
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      return createError('AI_INVALID_RESPONSE', '模型服务返回的内容无法解析。')
+    }
+    try {
+      return success(parseAiJson(payload))
+    } catch {
+      return createError('AI_INVALID_RESPONSE', '模型服务没有返回符合要求的 JSON。')
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return createError('AI_REQUEST_FAILED', 'AI 请求超时，请稍后重试。')
+    }
+    return createError('AI_REQUEST_FAILED', '无法连接模型服务，请检查网络后重试。')
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function getArticle(articleId: string): Promise<SavedArticle | null> {
+  return (await readSavedArticles()).find((article) => article.id === articleId) ?? null
+}
+
+async function startAiTraining(articleId: string): Promise<ExtensionResponse<TrainingSession>> {
+  const article = await getArticle(articleId)
+  if (!article) return createError('INVALID_REQUEST', '没有找到这篇本地文章。')
+
+  const session = await startTrainingSession(articleId)
+  if (session.currentStep >= 8) return success(session)
+  const prompt = buildStartPrompt(article.text, article.title, session.currentStep)
+  const completion = await requestAiJson(await readAiSettings(), prompt)
+  if (!completion.ok) return createError(completion.error.code, completion.error.message)
+
+  let question: string
+  try {
+    question = validateAiQuestion(completion.data)
+  } catch {
+    return createError('AI_INVALID_RESPONSE', '模型服务返回的问题不符合训练格式。')
+  }
+  const updated = await setTrainingQuestion(articleId, question)
+  return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
+}
+
+async function gradeAiTraining(articleId: string): Promise<ExtensionResponse<TrainingSession>> {
+  const article = await getArticle(articleId)
+  if (!article) return createError('INVALID_REQUEST', '没有找到这篇本地文章。')
+
+  const session = await getTrainingSession(articleId)
+  const turn = session?.turns.at(-1)
+  if (!session || !turn) return createError('INVALID_REQUEST', '还没有可评分的回答。')
+  if (turn.feedback) return success(session)
+
+  const prompt = buildGradePrompt(article.text, article.title, session)
+  const completion = await requestAiJson(await readAiSettings(), prompt)
+  if (!completion.ok) return createError(completion.error.code, completion.error.message)
+
+  let feedback
+  try {
+    feedback = validateAiFeedback(completion.data, article.text, turn.answer)
+  } catch {
+    return createError('AI_INVALID_RESPONSE', '模型服务返回的评分没有通过安全校验，请重试。')
+  }
+  const updated = await attachTrainingFeedback(articleId, feedback)
+  return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
+}
+
 async function handleMessage(
   message: ExtensionMessage,
 ): Promise<ExtensionResponse<unknown>> {
@@ -291,6 +420,10 @@ async function handleMessage(
     }
     case 'test-ai-connection':
       return testAiConnection(message.settings)
+    case 'ai-start':
+      return startAiTraining(message.articleId)
+    case 'ai-grade':
+      return gradeAiTraining(message.articleId)
     case 'save-article':
       return saveArticle(message.article)
     default:

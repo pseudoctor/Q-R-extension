@@ -8,6 +8,36 @@ export type AiSettings = {
   apiKey: string
 }
 
+export type AiDimension = {
+  score: number | null
+  reason: string
+}
+
+export type AiObservation = {
+  answerQuote: string
+  comment: string
+}
+
+export type AiSource = {
+  paragraph: number
+  quote: string
+  comment: string
+}
+
+export type AiFeedback = {
+  dimensions: {
+    fidelity: AiDimension
+    claim: AiDimension
+    cause: AiDimension
+    structure: AiDimension
+  }
+  strengths: AiObservation[]
+  gaps: AiObservation[]
+  sources: AiSource[]
+  nextQuestion: string
+  total: number
+}
+
 export type CaptureRecord = {
   id: string
   title: string
@@ -34,11 +64,13 @@ export type TrainingTurn = {
   question: string
   answer: string
   submittedAt: string
+  feedback?: AiFeedback
 }
 
 export type TrainingSession = {
   articleId: string
   currentStep: number
+  currentQuestion: string
   turns: TrainingTurn[]
   startedAt: string
   updatedAt: string
@@ -60,6 +92,8 @@ export type ErrorCode =
   | 'AI_NOT_CONFIGURED'
   | 'AI_PERMISSION_REQUIRED'
   | 'AI_CONNECTION_FAILED'
+  | 'AI_REQUEST_FAILED'
+  | 'AI_INVALID_RESPONSE'
 
 export type ExtensionError = {
   code: ErrorCode
@@ -84,6 +118,8 @@ export type ExtensionMessage =
   | { type: 'get-ai-settings' }
   | { type: 'save-ai-settings'; settings: AiSettings }
   | { type: 'test-ai-connection'; settings: AiSettings }
+  | { type: 'ai-start'; articleId: string }
+  | { type: 'ai-grade'; articleId: string }
   | { type: 'save-article'; article: CaptureRecord }
 
 export type ExtensionResponse<T> =

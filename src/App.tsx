@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   CaptureRecord,
   AiSettings,
+  AiFeedback,
   ExtensionError,
   ExtensionMessage,
   ExtensionResponse,
@@ -318,7 +319,8 @@ function SettingsPage() {
       {!loaded ? (
         <div className="loading-state">正在加载设置…</div>
       ) : (
-        <section className="settings-card">
+        <>
+          <section className="settings-card">
           <label>
             模型服务
             <select value={settings.provider} onChange={(event) => selectProvider(event.target.value as AiSettings['provider'])}>
@@ -349,7 +351,25 @@ function SettingsPage() {
           </div>
           {permissionStatus && <p className="status-message" role="status">{permissionStatus}</p>}
           {status && <p className="status-message" role="status">{status}</p>}
-        </section>
+          </section>
+          <section className="donation-card" aria-labelledby="donation-title">
+          <div>
+            <span className="section-kicker">SUPPORT THE PROJECT</span>
+            <h2 id="donation-title">如果问读对你有帮助</h2>
+            <p>可以请作者喝杯咖啡，感谢你的支持。</p>
+          </div>
+          <div className="donation-grid">
+            <figure>
+              <img src="/assets/donate-alipay.jpg" alt="支付宝打赏二维码" />
+              <figcaption>支付宝</figcaption>
+            </figure>
+            <figure>
+              <img src="/assets/donate-paypal.jpg" alt="PayPal 打赏二维码" />
+              <figcaption>PayPal</figcaption>
+            </figure>
+          </div>
+          </section>
+        </>
       )}
     </main>
   )
@@ -472,7 +492,7 @@ function TrainingPage() {
         <div>
           <span className="eyebrow">READ BEFORE YOU TRAIN</span>
           <h1>先把文章读进来</h1>
-          <p>确认正文后再开始图尔敏阅读训练。当前版本不会上传文章。</p>
+          <p>文章默认保存在本地；启用 AI 后，训练所需正文和回答会直接发送到你配置的模型服务商。</p>
         </div>
         <span className="local-pill">LOCAL ONLY</span>
       </header>
@@ -530,25 +550,35 @@ function TrainingPage() {
 
 function TrainingCoach({ articleId }: { articleId: string }) {
   const [session, setSession] = useState<TrainingSession | null>(null)
+  const [aiSettings, setAiSettings] = useState<AiSettings | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [aiLoaded, setAiLoaded] = useState(false)
   const [readConfirmed, setReadConfirmed] = useState(false)
   const [answer, setAnswer] = useState('')
   const [busy, setBusy] = useState(false)
+  const [offlineContinuation, setOfflineContinuation] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void sendExtensionMessage<TrainingSession | null>({
-        type: 'get-training-session',
-        articleId,
-      }).then((response) => {
+      void Promise.all([
+        sendExtensionMessage<TrainingSession | null>({
+          type: 'get-training-session',
+          articleId,
+        }),
+        sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }),
+      ]).then(([sessionResponse, settingsResponse]) => {
         setLoaded(true)
-        if (response.ok) setSession(response.data)
-        else setError(errorMessage(response.error))
+        setAiLoaded(true)
+        if (sessionResponse.ok) setSession(sessionResponse.data)
+        else setError(errorMessage(sessionResponse.error))
+        if (settingsResponse.ok) setAiSettings(settingsResponse.data)
       })
     }, 0)
     return () => window.clearTimeout(timer)
   }, [articleId])
+
+  const aiConfigured = aiLoaded && Boolean(aiSettings?.apiKey.trim())
 
   const start = async () => {
     setBusy(true)
@@ -557,9 +587,24 @@ function TrainingCoach({ articleId }: { articleId: string }) {
       type: 'start-training-session',
       articleId,
     })
+    if (!response.ok) {
+      setBusy(false)
+      setError(errorMessage(response.error))
+      return
+    }
+    setSession(response.data)
+
+    if (!aiConfigured) {
+      setBusy(false)
+      return
+    }
+    const aiResponse = await sendExtensionMessage<TrainingSession>({
+      type: 'ai-start',
+      articleId,
+    })
     setBusy(false)
-    if (response.ok) setSession(response.data)
-    else setError(errorMessage(response.error))
+    if (aiResponse.ok) setSession(aiResponse.data)
+    else setError(errorMessage(aiResponse.error))
   }
 
   const submit = async () => {
@@ -574,13 +619,42 @@ function TrainingCoach({ articleId }: { articleId: string }) {
       articleId,
       answer,
     })
-    setBusy(false)
     if (!response.ok) {
+      setBusy(false)
       setError(errorMessage(response.error))
       return
     }
     setSession(response.data)
     setAnswer('')
+    setOfflineContinuation(false)
+
+    if (!aiConfigured) {
+      setBusy(false)
+      return
+    }
+    const aiResponse = await sendExtensionMessage<TrainingSession>({
+      type: 'ai-grade',
+      articleId,
+    })
+    setBusy(false)
+    if (aiResponse.ok) setSession(aiResponse.data)
+    else setError(errorMessage(aiResponse.error))
+  }
+
+  const retryGrade = async () => {
+    setBusy(true)
+    setError('')
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'ai-grade',
+      articleId,
+    })
+    setBusy(false)
+    if (response.ok) {
+      setSession(response.data)
+      setOfflineContinuation(false)
+    } else {
+      setError(errorMessage(response.error))
+    }
   }
 
   const reset = async () => {
@@ -596,19 +670,22 @@ function TrainingCoach({ articleId }: { articleId: string }) {
     setSession(null)
     setReadConfirmed(false)
     setAnswer('')
+    setOfflineContinuation(false)
     setError('')
   }
 
   const step = session ? LESSON_STEPS[session.currentStep] : null
-  const completed = session?.currentStep === LESSON_STEPS.length
+  const latestTurn = session?.turns.at(-1)
+  const aiPending = Boolean(aiConfigured && latestTurn && !latestTurn.feedback && !offlineContinuation)
+  const completed = session?.currentStep === LESSON_STEPS.length && !aiPending
 
   return (
     <section className="coach-card" aria-label="图尔敏阅读训练">
       <div className="coach-heading">
         <div>
-          <span className="section-kicker">OFFLINE COACH</span>
+          <span className="section-kicker">{aiConfigured ? 'AI COACH' : 'LOCAL COACH'}</span>
           <h2>八轮独立阅读训练</h2>
-          <p>先自己读和回答；当前版本只保存回答，不伪造 AI 分数。</p>
+          <p>{aiConfigured ? '先独立回答，再由已配置的模型依据原文评分和追问。' : '先自己读和回答；打开设置即可接入 AI 出题与评分。'}</p>
         </div>
         {session && <span className="progress-pill">{Math.min(session.currentStep, LESSON_STEPS.length)} / {LESSON_STEPS.length}</span>}
       </div>
@@ -627,31 +704,49 @@ function TrainingCoach({ articleId }: { articleId: string }) {
             我已独立读完，准备开始第一轮
           </label>
           <button className="primary-button" type="button" onClick={() => void start()} disabled={!readConfirmed || busy}>
-            {busy ? '正在开始…' : '开始第一轮'}
+            {busy ? '正在开始…' : aiConfigured ? '开始第一轮（AI 出题）' : '开始第一轮'}
           </button>
+          {!aiConfigured && <button className="text-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })}>去设置 AI</button>}
+        </div>
+      ) : aiPending && latestTurn ? (
+        <div className="ai-pending-card">
+          <span className="section-kicker">AI REVIEW PENDING</span>
+          <h3>回答已保存，等待 AI 评分</h3>
+          <p>这轮回答不会丢失。评分成功后，下一轮问题才会解锁；如果服务暂时不可用，可以稍后重试。</p>
+          <blockquote>{latestTurn.answer}</blockquote>
+          <div className="round-footer">
+            <button className="primary-button" type="button" onClick={() => void retryGrade()} disabled={busy}>
+              {busy ? '评分中…' : '重试 AI 评分'}
+            </button>
+            <button className="text-button" type="button" onClick={() => setOfflineContinuation(true)} disabled={busy}>跳过评分，继续离线训练</button>
+          </div>
         </div>
       ) : completed ? (
-        <div className="coach-complete">
-          <span className="complete-mark">✓</span>
-          <div>
-            <h3>八轮训练已完成</h3>
-            <p>你已经留下了完整的阅读思考记录。下一阶段可以接入 AI，对回答做逐轮核验。</p>
+        <>
+          <div className="coach-complete">
+            <span className="complete-mark">✓</span>
+            <div>
+              <h3>八轮训练已完成</h3>
+              <p>你已经留下了完整的阅读思考记录。每轮回答和 AI 反馈都保存在本地。</p>
+            </div>
+            <button className="secondary-button" type="button" onClick={() => void reset()}>重新开始</button>
           </div>
-          <button className="secondary-button" type="button" onClick={() => void reset()}>重新开始</button>
-        </div>
+          {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
+        </>
       ) : step ? (
         <div className="coach-round">
           <div className="round-meta">
             <span>{step.stage} · {step.name}</span>
             <strong>{step.focus}</strong>
           </div>
-          <h3>{step.question}</h3>
+          {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
+          <h3>{session.currentQuestion || step.question}</h3>
           <p className="round-instruction">{step.instruction}</p>
-          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="先写下自己的理解，不必追求一次答对…" rows={8} maxLength={4000} disabled={busy} />
+          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="先写下自己的理解，不必追求一次答对…" rows={8} maxLength={4000} disabled={busy || aiPending} />
           <div className="round-footer">
             <span>{answer.length.toLocaleString()} / 4,000 字符</span>
-            <button className="primary-button" type="button" onClick={() => void submit()} disabled={busy || answer.trim().length < 5}>
-              {busy ? '保存中…' : '保存这一轮'}
+            <button className="primary-button" type="button" onClick={() => void submit()} disabled={busy || aiPending || answer.trim().length < 5}>
+              {busy ? aiConfigured ? 'AI 评分中…' : '保存中…' : aiConfigured ? '提交并评分' : '保存这一轮'}
             </button>
           </div>
           {session.turns.length > 0 && (
@@ -659,7 +754,7 @@ function TrainingCoach({ articleId }: { articleId: string }) {
               <summary>查看已完成的 {session.turns.length} 轮</summary>
               {session.turns.map((turn) => (
                 <div key={`${turn.stepIndex}-${turn.submittedAt}`}>
-                  <strong>第 {turn.stepIndex + 1} 轮</strong>
+                  <strong>第 {turn.stepIndex + 1} 轮{turn.feedback ? ` · ${turn.feedback.total} / 100` : ''}</strong>
                   <p>{turn.answer}</p>
                 </div>
               ))}
@@ -669,6 +764,45 @@ function TrainingCoach({ articleId }: { articleId: string }) {
       ) : null}
       {error && <p className="inline-error" role="alert">{error}</p>}
     </section>
+  )
+}
+
+function FeedbackCard({ feedback }: { feedback: AiFeedback }) {
+  const dimensions = [
+    ['原文忠实度', feedback.dimensions.fidelity],
+    ['核心主张', feedback.dimensions.claim],
+    ['因果分析', feedback.dimensions.cause],
+    ['论证结构', feedback.dimensions.structure],
+  ] as const
+
+  return (
+    <div className="feedback-card">
+      <div className="feedback-header">
+        <div>
+          <span className="section-kicker">AI FEEDBACK</span>
+          <h4>本轮评分：{feedback.total} / 100</h4>
+        </div>
+      </div>
+      <div className="feedback-dimensions">
+        {dimensions.map(([label, dimension]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{dimension.score === null ? '未测' : `${dimension.score} / 10`}</strong>
+            <small>{dimension.reason}</small>
+          </div>
+        ))}
+      </div>
+      {(feedback.strengths.length > 0 || feedback.gaps.length > 0) && (
+        <div className="feedback-notes">
+          {feedback.strengths.map((item, index) => <p className="feedback-strength" key={`strength-${index}`}><strong>做得好：</strong>{item.comment}{item.answerQuote && `「${item.answerQuote}」`}</p>)}
+          {feedback.gaps.map((item, index) => <p className="feedback-gap" key={`gap-${index}`}><strong>可以改进：</strong>{item.comment}{item.answerQuote && `「${item.answerQuote}」`}</p>)}
+        </div>
+      )}
+      <details className="feedback-sources">
+        <summary>查看原文依据</summary>
+        {feedback.sources.map((source) => <p key={`${source.paragraph}-${source.quote}`}><strong>第 {source.paragraph} 段：</strong>“{source.quote}”<br />{source.comment}</p>)}
+      </details>
+    </div>
   )
 }
 

@@ -1,4 +1,5 @@
 import type {
+  AiFeedback,
   StorageState,
   TrainingSession,
   TrainingSessionStore,
@@ -9,10 +10,10 @@ export const TRAINING_SESSIONS_KEY = 'trainingSessions'
 
 export function normalizeTrainingSessionStore(value: unknown): TrainingSessionStore {
   if (Array.isArray(value)) {
-    return { version: 1, items: value.filter(isTrainingSession) }
+    return { version: 1, items: value.filter(isTrainingSession).map(withQuestionDefault) }
   }
   if (isRecord(value) && value.version === 1 && Array.isArray(value.items)) {
-    return { version: 1, items: value.items.filter(isTrainingSession) }
+    return { version: 1, items: value.items.filter(isTrainingSession).map(withQuestionDefault) }
   }
   return { version: 1, items: [] }
 }
@@ -39,6 +40,7 @@ export async function startTrainingSession(articleId: string) {
   const session: TrainingSession = {
     articleId,
     currentStep: 0,
+    currentQuestion: LESSON_STEPS[0].question,
     turns: [],
     startedAt: now,
     updatedAt: now,
@@ -58,7 +60,7 @@ export async function submitTrainingAnswer(articleId: string, answer: string) {
   const now = new Date().toISOString()
   const turn = {
     stepIndex: session.currentStep,
-    question: LESSON_STEPS[session.currentStep]?.question ?? '巩固回答',
+    question: session.currentQuestion,
     answer: trimmedAnswer,
     submittedAt: now,
   }
@@ -66,9 +68,40 @@ export async function submitTrainingAnswer(articleId: string, answer: string) {
   const updated: TrainingSession = {
     ...session,
     currentStep: nextStep,
+    currentQuestion: LESSON_STEPS[nextStep]?.question ?? '',
     turns: [...session.turns, turn],
     updatedAt: now,
     ...(nextStep === 8 ? { completedAt: now } : {}),
+  }
+  const sessions = await readTrainingSessions()
+  await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
+  return updated
+}
+
+export async function setTrainingQuestion(articleId: string, question: string) {
+  const session = await getTrainingSession(articleId)
+  if (!session) return null
+  const updated = {
+    ...session,
+    currentQuestion: question,
+    updatedAt: new Date().toISOString(),
+  }
+  const sessions = await readTrainingSessions()
+  await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
+  return updated
+}
+
+export async function attachTrainingFeedback(articleId: string, feedback: AiFeedback) {
+  const session = await getTrainingSession(articleId)
+  if (!session || !session.turns.length) return null
+  const turns = session.turns.map((turn, index) =>
+    index === session.turns.length - 1 ? { ...turn, feedback } : turn,
+  )
+  const updated = {
+    ...session,
+    turns,
+    currentQuestion: feedback.nextQuestion,
+    updatedAt: new Date().toISOString(),
   }
   const sessions = await readTrainingSessions()
   await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
@@ -93,9 +126,17 @@ function isTrainingSession(value: unknown): value is TrainingSession {
     Number.isInteger(currentStep) &&
     currentStep >= 0 &&
     currentStep <= 8 &&
+    (typeof value.currentQuestion === 'string' || value.currentQuestion === undefined) &&
     Array.isArray(value.turns) &&
     typeof value.startedAt === 'string' &&
     typeof value.updatedAt === 'string'
   )
+}
+
+function withQuestionDefault(session: TrainingSession): TrainingSession {
+  return {
+    ...session,
+    currentQuestion: session.currentQuestion || LESSON_STEPS[session.currentStep]?.question || '',
+  }
 }
 

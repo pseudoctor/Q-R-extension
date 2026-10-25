@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
@@ -38,6 +38,41 @@ if (manifest.host_permissions) {
 const command = manifest.commands?.['capture-and-open']
 if (!command?.suggested_key?.default || !command?.description) {
   throw new Error('manifest 缺少 capture-and-open 快捷键配置。')
+}
+
+const optionalOrigins = new Set(manifest.optional_host_permissions ?? [])
+for (const origin of [
+  'https://api.openai.com/*',
+  'https://api.deepseek.com/*',
+  'https://generativelanguage.googleapis.com/*',
+  'https://dashscope.aliyuncs.com/*',
+  'https://open.bigmodel.cn/*',
+  'https://api.moonshot.cn/*',
+]) {
+  if (!optionalOrigins.has(origin)) {
+    throw new Error(`manifest 缺少 AI 服务的可选网络权限：${origin}`)
+  }
+}
+
+const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
+for (const marker of ['ai-start', 'ai-grade', '/chat/completions', 'AbortController']) {
+  if (!background.includes(marker)) {
+    throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
+  }
+}
+
+const appBundle = readdirSync(resolve(dist, 'assets'))
+  .filter((file) => file.endsWith('.js'))
+  .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
+  .join('\n')
+if (!appBundle.includes('AI FEEDBACK') || !appBundle.includes('提交并评分')) {
+  throw new Error('训练页面缺少 AI 评分交互。')
+}
+
+for (const asset of ['assets/donate-alipay.jpg', 'assets/donate-paypal.jpg']) {
+  if (!existsSync(resolve(dist, asset))) {
+    throw new Error(`构建产物缺少打赏资源：${asset}`)
+  }
 }
 
 if (manifest.background?.type !== 'module') {
