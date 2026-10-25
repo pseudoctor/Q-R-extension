@@ -17,9 +17,11 @@ import type {
 import { getArticleBlocks, normalizeArticleBlocks, numberArticleBlocks } from './articles/format'
 import {
   buildGradePrompt,
+  buildReferenceAnswerPrompt,
   buildStartPrompt,
   parseAiJson,
   validateAiFeedback,
+  validateAiReferenceAnswer,
   validateAiQuestion,
 } from './ai/coach'
 import {
@@ -42,6 +44,7 @@ import {
   resetTrainingSession,
   rewindTrainingSession,
   saveTrainingDraft,
+  saveTrainingReferenceAnswer,
   setTrainingQuestion,
   startTrainingSession,
 } from './storage/training'
@@ -628,6 +631,33 @@ async function gradeAiTraining(articleId: string): Promise<ExtensionResponse<Tra
   return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
 }
 
+async function generateAiReferenceAnswer(articleId: string, submittedAt: string): Promise<ExtensionResponse<TrainingSession>> {
+  const locale = await readLocale()
+  const article = await getArticle(articleId)
+  const session = await getTrainingSession(articleId, locale)
+  if (!article || !session) return createError('INVALID_REQUEST', '没有找到这次训练。')
+  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
+
+  const turn = session.turns.find((candidate) => candidate.submittedAt === submittedAt && candidate.feedback)
+  if (!turn?.feedback) return createError('INVALID_REQUEST', '请先完成本轮评分，再生成参考答案。')
+  if (turn.referenceAnswer) return success(session)
+
+  const completion = await requestAiJson(
+    await readAiSettings(),
+    buildReferenceAnswerPrompt(article.text, article.title, article.metadata, turn, locale, article.blocks),
+  )
+  if (!completion.ok) return createError(completion.error.code, completion.error.message)
+
+  let referenceAnswer
+  try {
+    referenceAnswer = validateAiReferenceAnswer(completion.data, article.text, article.blocks)
+  } catch {
+    return createError('AI_ANSWER_INVALID', '模型服务返回的参考答案没有通过原文依据校验，请重试。')
+  }
+  const updated = await saveTrainingReferenceAnswer(articleId, submittedAt, referenceAnswer, locale)
+  return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
+}
+
 async function prepareAiBridge(articleId: string): Promise<ExtensionResponse<{ requestId: string; prompt: string }>> {
   const locale = await readLocale()
   const article = await getArticle(articleId)
@@ -821,6 +851,8 @@ async function handleMessage(
       return startAiTraining(message.articleId)
     case 'ai-grade':
       return gradeAiTraining(message.articleId)
+    case 'ai-reference-answer':
+      return generateAiReferenceAnswer(message.articleId, message.submittedAt)
     case 'prepare-ai-bridge':
       return prepareAiBridge(message.articleId)
     case 'import-ai-feedback':

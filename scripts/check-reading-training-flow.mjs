@@ -21,7 +21,7 @@ const {
   removeTrainingSession,
   startTrainingSession,
 } = await server.ssrLoadModule('/src/storage/training.ts')
-const { buildGradePrompt, buildStartPrompt, validateAiFeedback } = await server.ssrLoadModule('/src/ai/coach.ts')
+const { buildGradePrompt, buildReferenceAnswerPrompt, buildStartPrompt, validateAiFeedback, validateAiReferenceAnswer } = await server.ssrLoadModule('/src/ai/coach.ts')
 
 assert.deepEqual(LESSON_STEPS.map((step) => step.id), [
   'preview',
@@ -41,6 +41,7 @@ assert.match(getLessonSteps('zh-CN')[0].question, /标题、副标题、作者�
 assert.doesNotMatch(getLessonSteps('zh-CN')[0].question, /请记录标题、副标题、作者、来源/)
 assert.match(getLessonSteps('zh-CN')[0].question, /第一段、最后一段、小标题、图表以及强调内容/)
 assert.equal(getLessonSteps('zh-CN')[2].name, '分层阅读·3句法')
+assert.match(getLessonSteps('zh-CN')[2].hint, /原文内容和你的推断/)
 assert.equal(getLessonSteps('zh-CN')[5].name, '识别隐藏假设')
 assert.equal(getLessonSteps('zh-CN')[6].name, '检查逻辑漏洞')
 assert.equal(getLegacyLessonSteps('zh-CN')[0].name, '读后线索')
@@ -113,6 +114,22 @@ const threeSentenceGrade = buildGradePrompt('第一句。\n\n第二段。', '标
 const threeSentenceInput = JSON.parse(threeSentenceGrade.user)
 assert.equal(threeSentenceInput.stepId, 'three-sentence')
 assert.equal(threeSentenceInput.threeSentenceDrafts[0].why, '原文未提供')
+
+const referencePrompt = buildReferenceAnswerPrompt('第一段。\n\n第二段。', '标题', { subtitle: '', author: '', source: '' }, {
+  stepIndex: 2,
+  stepId: 'three-sentence',
+  question: '逐段回答？',
+  answer: '学生回答。',
+  submittedAt: '2026-01-01T00:00:00.000Z',
+})
+assert.equal(referencePrompt.responseFormat.json_schema.name, 'training_reference_answer')
+assert.equal(JSON.parse(referencePrompt.user).studentAnswer, '学生回答。')
+const referenceAnswer = {
+  answer: '参考答案只根据原文整理段落内容，并明确区分原文依据与阅读推断。',
+  sources: [{ paragraph: 1, quote: '第一段。', comment: '这段提供了参考答案的原文依据。' }],
+}
+assert.doesNotThrow(() => validateAiReferenceAnswer(referenceAnswer, '第一段。\n\n第二段。'))
+assert.throws(() => validateAiReferenceAnswer({ ...referenceAnswer, sources: [{ ...referenceAnswer.sources[0], quote: '不存在的引文。' }] }, '第一段。\n\n第二段。'))
 
 const feedback = {
   dimensions: {

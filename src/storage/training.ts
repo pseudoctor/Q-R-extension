@@ -1,5 +1,6 @@
 import type {
   AiFeedback,
+  AiReferenceAnswer,
   Locale,
   StorageState,
   TrainingSession,
@@ -180,6 +181,26 @@ export async function commitTrainingFeedback(articleId: string, feedback: AiFeed
       updatedAt: now,
       ...(nextStep === LESSON_STEPS.length ? { completedAt: now } : { completedAt: undefined }),
     }
+    const sessions = await readTrainingSessionsV2(locale)
+    await writeTrainingSessionsV2(sessions.map((item) => item.articleId === articleId ? updated : item))
+    return updated
+  })
+}
+
+export async function saveTrainingReferenceAnswer(
+  articleId: string,
+  submittedAt: string,
+  referenceAnswer: AiReferenceAnswer,
+  locale: Locale = 'zh-CN',
+) {
+  return trainingMutation(async () => {
+    const session = await getWritableTrainingSession(articleId, locale)
+    if (!session) return null
+    const turnIndex = session.turns.findIndex((turn) => turn.submittedAt === submittedAt && Boolean(turn.feedback))
+    if (turnIndex < 0) return null
+    if (session.turns[turnIndex].referenceAnswer) return session
+    const turns = session.turns.map((turn, index) => index === turnIndex ? { ...turn, referenceAnswer } : turn)
+    const updated = { ...session, turns, updatedAt: new Date().toISOString() }
     const sessions = await readTrainingSessionsV2(locale)
     await writeTrainingSessionsV2(sessions.map((item) => item.articleId === articleId ? updated : item))
     return updated

@@ -1271,6 +1271,21 @@
   line-height: 1.6;
 }
 
+.hint-toggle {
+  margin: -6px 0 12px;
+  padding: 0;
+}
+
+.round-hint {
+  margin: -4px 0 16px;
+  border-left: 3px solid var(--accent);
+  padding: 10px 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .coach-round textarea {
   width: 100%;
   box-sizing: border-box;
@@ -1540,6 +1555,34 @@
 .feedback-sources p {
   margin: 10px 0 0;
   line-height: 1.6;
+}
+
+.reference-answer {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.reference-answer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.reference-answer-copy,
+.reference-answer-note {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.reference-answer-note {
+  color: var(--muted);
 }
 
 .bridge-card {

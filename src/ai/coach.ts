@@ -1,5 +1,5 @@
 import { getArticleBlocks, numberArticleBlocks, type NumberedArticleParagraph } from '../articles/format'
-import type { AiDimensionId, AiFeedback, ArticleBlock, ArticleMetadata, Locale, TrainingSession } from '../types'
+import type { AiDimensionId, AiFeedback, AiReferenceAnswer, ArticleBlock, ArticleMetadata, Locale, TrainingSession, TrainingTurn } from '../types'
 import { getLessonSteps, getNextLessonStepId, LESSON_STEPS } from '../training/lessons'
 import { translate } from '../i18n/messages'
 
@@ -86,6 +86,56 @@ export function buildGradePrompt(
       history: session.turns.slice(-10).map(({ question, answer, stepIndex, stepId }) => ({ question, answer, stepIndex, stepId })),
     }),
     responseFormat: buildJsonResponseFormat('training_feedback', buildFeedbackSchema(step.dimensions, expectedNextStepId)),
+  }
+}
+
+export function buildReferenceAnswerPrompt(
+  article: string,
+  title: string,
+  metadata: ArticleMetadata = emptyMetadata(),
+  turn: TrainingTurn,
+  locale: Locale = 'zh-CN',
+  blocks?: ArticleBlock[],
+) {
+  const steps = getLessonSteps(locale)
+  const step = steps[Math.min(steps.length - 1, Math.max(0, turn.stepIndex))]
+  return {
+    system: `${translate(locale, 'ai.basePrompt')}
+${translate(locale, 'ai.stepPrefix')}“${step.name}”（${step.focus}，stepId: ${step.id}）。${translate(locale, 'ai.referenceAnswerInstruction')}
+${translate(locale, 'ai.jsonOnly')}`,
+    user: JSON.stringify({
+      stepId: step.id,
+      stepIndex: turn.stepIndex,
+      locale,
+      title,
+      metadata,
+      paragraphs: numberArticleBlocks(getArticleBlocks(article, blocks)).map(({ paragraph, text }) => ({ paragraph, text })),
+      question: turn.question,
+      studentAnswer: turn.answer,
+    }),
+    responseFormat: buildJsonResponseFormat('training_reference_answer', {
+      type: 'object',
+      properties: {
+        answer: { type: 'string', minLength: 20, maxLength: 4_000 },
+        sources: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: {
+            type: 'object',
+            properties: {
+              paragraph: { type: 'integer' },
+              quote: { type: 'string' },
+              comment: { type: 'string' },
+            },
+            required: ['paragraph', 'quote', 'comment'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['answer', 'sources'],
+      additionalProperties: false,
+    }),
   }
 }
 
@@ -220,6 +270,20 @@ export function validateAiFeedback(
   const nextQuestion = validateAiQuestion({ question: value.nextQuestion })
   const total = totalScore(dimensions, stepIndex < LESSON_STEPS.length ? step.dimensions : DIMENSION_KEYS)
   return { dimensions, strengths, gaps, sources, nextQuestion, nextStepId, total }
+}
+
+export function validateAiReferenceAnswer(
+  value: unknown,
+  article: string,
+  blocks?: ArticleBlock[],
+): AiReferenceAnswer {
+  if (!isRecord(value)) throw new Error('AI 参考答案格式无效。')
+  const answer = typeof value.answer === 'string' ? value.answer.trim() : ''
+  if (answer.length < 20 || answer.length > 4_000 || /[？?]/.test(answer)) {
+    throw new Error('AI 参考答案未通过校验。')
+  }
+  const sources = validateSources(value.sources, numberArticleBlocks(getArticleBlocks(article, blocks)))
+  return { answer, sources }
 }
 
 function extractContent(payload: unknown) {

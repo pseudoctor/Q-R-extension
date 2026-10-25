@@ -72,6 +72,11 @@ export type AiFeedback = {
   total: number
 }
 
+export type AiReferenceAnswer = {
+  answer: string
+  sources: AiSource[]
+}
+
 export type CaptureRecord = {
   id: string
   title: string
@@ -110,6 +115,7 @@ export type TrainingTurn = {
   submittedAt: string
   threeSentenceDrafts?: ThreeSentenceDraft[]
   paragraphCursor?: number
+  referenceAnswer?: AiReferenceAnswer
   feedback?: AiFeedback
 }
 
@@ -162,6 +168,7 @@ export type ErrorCode =
   | 'AI_RESPONSE_INVALID_JSON'
   | 'AI_QUESTION_INVALID'
   | 'AI_FEEDBACK_INVALID'
+  | 'AI_ANSWER_INVALID'
   | 'TRAINING_ANSWER_FORMAT_INVALID'
   | 'TRAINING_READ_ONLY'
   | 'SHORTCUTS_PAGE_FAILED'
@@ -198,6 +205,7 @@ export type ExtensionMessage =
   | { type: 'test-ai-connection'; settings: AiSettings }
   | { type: 'ai-start'; articleId: string }
   | { type: 'ai-grade'; articleId: string }
+  | { type: 'ai-reference-answer'; articleId: string; submittedAt: string }
   | { type: 'prepare-ai-bridge'; articleId: string }
   | { type: 'import-ai-feedback'; articleId: string; requestId: string; raw: string }
   | { type: 'save-article'; article: CaptureRecord }

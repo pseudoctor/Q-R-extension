@@ -4,6 +4,7 @@ import type {
   AiSettings,
   AiModelOption,
   AiFeedback,
+  AiReferenceAnswer,
   ArticleBlock,
   ArticleInline,
   ExtensionError,
@@ -994,6 +995,8 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
   const [bridgeReply, setBridgeReply] = useState('')
   const [bridgeError, setBridgeError] = useState('')
   const [error, setError] = useState('')
+  const [hintVisible, setHintVisible] = useState(false)
+  const [referenceAnswerBusy, setReferenceAnswerBusy] = useState(false)
 
   const applySession = useCallback((next: TrainingSession) => {
     const restoredDrafts = next.currentStep === 2
@@ -1010,6 +1013,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     setThreeSentenceDrafts(restoredDrafts)
     setParagraphCursor(nextCursor)
     setAnswer(next.currentStep === 2 ? formatThreeSentenceAnswer(restoredDrafts) || next.draft : next.draft)
+    setHintVisible(false)
   }, [paragraphs])
 
   useEffect(() => {
@@ -1182,6 +1186,23 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     setBridgeError('')
   }
 
+  const requestReferenceAnswer = async (turn: TrainingSession['turns'][number]) => {
+    if (!turn.feedback || !aiConfigured || referenceAnswerBusy) return
+    setReferenceAnswerBusy(true)
+    setError('')
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'ai-reference-answer',
+      articleId,
+      submittedAt: turn.submittedAt,
+    })
+    setReferenceAnswerBusy(false)
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return
+    }
+    applySession(response.data)
+  }
+
   const rewind = async () => {
     if (!canGoBack || !window.confirm(t('coach.confirmBack'))) return
     setBusy(true)
@@ -1217,6 +1238,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     setAnswer('')
     setThreeSentenceDrafts([])
     setParagraphCursor(0)
+    setHintVisible(false)
     setBridge(null)
     setBridgeReply('')
     setBridgeError('')
@@ -1276,9 +1298,9 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
             </div>
             {canGoBack && <button className="secondary-button" type="button" onClick={() => void rewind()} disabled={busy}>{t('coach.back')}</button>}
             <button className="secondary-button" type="button" onClick={() => void reset()}>{t('coach.restart')}</button>
-            <button className="secondary-button" type="button" onClick={() => { setReinforcing(true); setAnswer(''); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>{t('coach.reinforce')}</button>
+            <button className="secondary-button" type="button" onClick={() => { setReinforcing(true); setAnswer(''); setHintVisible(false); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>{t('coach.reinforce')}</button>
           </div>
-          {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
+          {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} referenceAnswer={latestTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(latestTurn)} />}
         </>
       ) : step ? (
         <div className="coach-round">
@@ -1286,10 +1308,12 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
             <span>{reinforcing ? t('coach.reinforceLabel') : step.name}</span>
             <strong>{step.focus}</strong>
           </div>
-          {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
+          {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} referenceAnswer={latestTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(latestTurn)} />}
           {transition && <p className="round-transition">{transition}</p>}
           <h3>{session.currentQuestion || step.question}</h3>
           <p className="round-instruction">{step.instruction}</p>
+          <button className="text-button hint-toggle" type="button" onClick={() => setHintVisible((visible) => !visible)}>{hintVisible ? t('coach.hideHint') : t('coach.showHint')}</button>
+          {hintVisible && <p className="round-hint">{step.hint}</p>}
           {isThreeSentenceStep ? (
             <div className="three-sentence-workbench">
               {currentParagraph ? (
@@ -1355,7 +1379,19 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
   )
 }
 
-function FeedbackCard({ feedback }: { feedback: AiFeedback }) {
+function FeedbackCard({
+  feedback,
+  referenceAnswer,
+  referenceAnswerBusy = false,
+  canGenerateReferenceAnswer = false,
+  onGenerateReferenceAnswer,
+}: {
+  feedback: AiFeedback
+  referenceAnswer?: AiReferenceAnswer
+  referenceAnswerBusy?: boolean
+  canGenerateReferenceAnswer?: boolean
+  onGenerateReferenceAnswer?: () => void
+}) {
   const { t } = useI18n()
   const dimensions = [
     [t('feedback.fidelity'), feedback.dimensions.fidelity],
@@ -1391,6 +1427,25 @@ function FeedbackCard({ feedback }: { feedback: AiFeedback }) {
         <summary>{t('feedback.sources')}</summary>
         {feedback.sources.map((source) => <p key={`${source.paragraph}-${source.quote}`}><strong>{t('feedback.paragraph', { number: source.paragraph })}</strong>“{source.quote}”<br />{source.comment}</p>)}
       </details>
+      <div className="reference-answer">
+        <div className="reference-answer-heading">
+          <strong>{t('feedback.referenceAnswer')}</strong>
+          {!referenceAnswer && canGenerateReferenceAnswer && onGenerateReferenceAnswer && (
+            <button className="secondary-button" type="button" onClick={onGenerateReferenceAnswer} disabled={referenceAnswerBusy}>
+              {referenceAnswerBusy ? t('feedback.referenceAnswerLoading') : t('feedback.generateReferenceAnswer')}
+            </button>
+          )}
+        </div>
+        {referenceAnswer ? (
+          <>
+            <p className="reference-answer-copy">{referenceAnswer.answer}</p>
+            <details className="feedback-sources">
+              <summary>{t('feedback.referenceSources')}</summary>
+              {referenceAnswer.sources.map((source) => <p key={`${source.paragraph}-${source.quote}`}><strong>{t('feedback.paragraph', { number: source.paragraph })}</strong>“{source.quote}”<br />{source.comment}</p>)}
+            </details>
+          </>
+        ) : !canGenerateReferenceAnswer ? <p className="reference-answer-note">{t('feedback.referenceAnswerUnavailable')}</p> : null}
+      </div>
     </div>
   )
 }

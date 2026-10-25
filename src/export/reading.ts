@@ -1,4 +1,4 @@
-import type { ArticleBlock, ArticleInline, CaptureRecord, Locale, SavedArticle, TrainingSession, TrainingFlowId } from '../types'
+import type { AiReferenceAnswer, ArticleBlock, ArticleInline, CaptureRecord, Locale, SavedArticle, TrainingSession, TrainingFlowId } from '../types'
 import { articleBlocksToText, getArticleBlocks } from '../articles/format'
 import { articleBlocksToMarkdown } from './markdown'
 import { getLegacyLessonSteps, getLessonSteps, LESSON_STEPS } from '../training/lessons'
@@ -30,6 +30,7 @@ export type ReadingExportModel = {
     answer: string
     date: string
     feedback: NonNullable<TrainingSession['turns'][number]['feedback']> | null
+    referenceAnswer: AiReferenceAnswer | null
   }>
   draft: string
 }
@@ -80,6 +81,7 @@ export function buildReadingExportModel(
       answer: turn.answer,
       date: turn.submittedAt,
       feedback: turn.feedback ?? null,
+      referenceAnswer: turn.referenceAnswer ?? null,
     })),
     draft: session?.draft ?? '',
   }
@@ -159,7 +161,7 @@ export function generateReadingMarkdown(model: ReadingExportModel) {
       '',
       escapeMarkdownBlock(turn.answer) || t('export.noRecordedAnswer'),
       '',
-      ...feedbackMarkdown(turn.feedback, model.locale),
+      ...feedbackMarkdown(turn.feedback, model.locale, turn.referenceAnswer),
       '',
     )
   })
@@ -171,7 +173,7 @@ export function generateReadingPdfHtml(model: ReadingExportModel) {
   const t = (key: string, variables?: Record<string, string | number>) => translate(model.locale, key, variables)
   const paragraphs = articleBlocksToHtml(model.articleBlocks)
   const turns = model.turns.length
-    ? model.turns.map((turn) => `<article class="turn"><h3>${escapeHtml(t('export.round', { number: turn.number }))} · ${escapeHtml(turn.stage)} · ${escapeHtml(turn.step)}</h3><h4>${escapeHtml(t('export.question'))}</h4>${htmlParagraphs(turn.question, t('export.notProvided'))}<h4>${escapeHtml(t('export.myAnswer'))}</h4>${htmlParagraphs(turn.answer, t('export.notProvided'))}${feedbackHtml(turn.feedback, model.locale)}</article>`).join('')
+    ? model.turns.map((turn) => `<article class="turn"><h3>${escapeHtml(t('export.round', { number: turn.number }))} · ${escapeHtml(turn.stage)} · ${escapeHtml(turn.step)}</h3><h4>${escapeHtml(t('export.question'))}</h4>${htmlParagraphs(turn.question, t('export.notProvided'))}<h4>${escapeHtml(t('export.myAnswer'))}</h4>${htmlParagraphs(turn.answer, t('export.notProvided'))}${feedbackHtml(turn.feedback, model.locale, turn.referenceAnswer)}</article>`).join('')
     : `<p>${escapeHtml(t('export.noAnswer'))}</p>`
   const subtitle = model.metadata.subtitle ? `<p class="subtitle">${escapeHtml(model.metadata.subtitle)}</p>` : ''
   const prediction = model.preReadingPrediction ? `<section class="prediction"><h2>${escapeHtml(t('export.prediction'))}</h2>${htmlParagraphs(model.preReadingPrediction, t('export.notProvided'))}</section>` : ''
@@ -227,7 +229,7 @@ function averageScore(turns: TrainingSession['turns']) {
   return scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : null
 }
 
-function feedbackMarkdown(feedback: NonNullable<TrainingSession['turns'][number]['feedback']> | null, locale: Locale) {
+function feedbackMarkdown(feedback: NonNullable<TrainingSession['turns'][number]['feedback']> | null, locale: Locale, referenceAnswer: AiReferenceAnswer | null = null) {
   const t = (key: string, variables?: Record<string, string | number>) => translate(locale, key, variables)
   if (!feedback) return [t('export.notScored')]
   const dimensions = [
@@ -249,6 +251,13 @@ function feedbackMarkdown(feedback: NonNullable<TrainingSession['turns'][number]
     lines.push(`  ${escapeMarkdownBlock(source.comment)}`)
   })
   lines.push('', `#### ${t('export.nextQuestion')}`, '', escapeMarkdownBlock(feedback.nextQuestion))
+  if (referenceAnswer) {
+    lines.push('', `#### ${t('feedback.referenceAnswer')}`, '', escapeMarkdownBlock(referenceAnswer.answer), '', `#### ${t('feedback.referenceSources')}`, '')
+    referenceAnswer.sources.forEach((source) => {
+      lines.push(`- ${t('feedback.paragraph', { number: source.paragraph })} ${blockquote(source.quote).replace(/\n/g, '\n  ')}`)
+      lines.push(`  ${escapeMarkdownBlock(source.comment)}`)
+    })
+  }
   return lines
 }
 
@@ -264,7 +273,7 @@ function appendObservations(lines: string[], heading: string, items: Array<{ ans
   })
 }
 
-function feedbackHtml(feedback: NonNullable<TrainingSession['turns'][number]['feedback']> | null, locale: Locale) {
+function feedbackHtml(feedback: NonNullable<TrainingSession['turns'][number]['feedback']> | null, locale: Locale, referenceAnswer: AiReferenceAnswer | null = null) {
   const t = (key: string, variables?: Record<string, string | number>) => translate(locale, key, variables)
   if (!feedback) return `<p>${escapeHtml(t('export.notScored'))}</p>`
   const dimensions = [
@@ -281,7 +290,10 @@ function feedbackHtml(feedback: NonNullable<TrainingSession['turns'][number]['fe
     ? `<ul>${items.map((item) => `<li>${item.answerQuote ? `<blockquote>${htmlParagraphs(item.answerQuote, t('export.notProvided'))}</blockquote>` : ''}<p>${htmlParagraphs(item.comment, t('export.notProvided'))}</p></li>`).join('')}</ul>`
     : `<p>${escapeHtml(empty)}</p>`
   const sources = `<ul>${feedback.sources.map((source) => `<li><strong>${escapeHtml(t('feedback.paragraph', { number: source.paragraph }))}</strong><blockquote>${htmlParagraphs(source.quote, t('export.notProvided'))}</blockquote><p>${htmlParagraphs(source.comment, t('export.notProvided'))}</p></li>`).join('')}</ul>`
-  return `<section class="feedback"><h4>${escapeHtml(t('export.feedback'))}</h4><ul class="dimensions">${dimensionHtml}</ul><h4>${escapeHtml(t('export.strengths'))}</h4>${observations(feedback.strengths, t('export.noStrengths'))}<h4>${escapeHtml(t('export.gaps'))}</h4>${observations(feedback.gaps, t('export.noGaps'))}<h4>${escapeHtml(t('export.sourceEvidence'))}</h4>${sources}<h4>${escapeHtml(t('export.nextQuestion'))}</h4>${htmlParagraphs(feedback.nextQuestion, t('export.notProvided'))}</section>`
+  const reference = referenceAnswer
+    ? `<h4>${escapeHtml(t('feedback.referenceAnswer'))}</h4>${htmlParagraphs(referenceAnswer.answer, t('export.notProvided'))}<h4>${escapeHtml(t('feedback.referenceSources'))}</h4><ul>${referenceAnswer.sources.map((source) => `<li><strong>${escapeHtml(t('feedback.paragraph', { number: source.paragraph }))}</strong><blockquote>${htmlParagraphs(source.quote, t('export.notProvided'))}</blockquote><p>${htmlParagraphs(source.comment, t('export.notProvided'))}</p></li>`).join('')}</ul>`
+    : ''
+  return `<section class="feedback"><h4>${escapeHtml(t('export.feedback'))}</h4><ul class="dimensions">${dimensionHtml}</ul><h4>${escapeHtml(t('export.strengths'))}</h4>${observations(feedback.strengths, t('export.noStrengths'))}<h4>${escapeHtml(t('export.gaps'))}</h4>${observations(feedback.gaps, t('export.noGaps'))}<h4>${escapeHtml(t('export.sourceEvidence'))}</h4>${sources}<h4>${escapeHtml(t('export.nextQuestion'))}</h4>${htmlParagraphs(feedback.nextQuestion, t('export.notProvided'))}${reference}</section>`
 }
 
 function splitArticle(article: string) {
