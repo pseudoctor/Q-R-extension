@@ -39,6 +39,13 @@ import './App.css'
 const extensionAvailable =
   typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id)
 
+const LOCALE_SHORT_LABELS = {
+  'zh-CN': '中',
+  en: 'EN',
+  ja: '日',
+  ko: '한',
+} as const
+
 async function sendExtensionMessage<T>(
   message: ExtensionMessage,
 ): Promise<ExtensionResponse<T>> {
@@ -70,7 +77,7 @@ function App() {
 }
 
 function SidePanel() {
-  const { t, locale } = useI18n()
+  const { t, locale, localeOptions, setLocale } = useI18n()
   const [articles, setArticles] = useState<SavedArticle[]>([])
   const [sessions, setSessions] = useState<Record<string, TrainingSession>>({})
   const [status, setStatusValue] = useState(() => ({ text: t('side.statusReady'), locale }))
@@ -250,7 +257,29 @@ function SidePanel() {
         </div>
         <div className="header-actions">
           <button className="icon-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })} aria-label={t('side.settingsAria')} title={t('side.settingsTitle')}>⚙</button>
-          <span className="status-dot" aria-label={t('side.localAria')} />
+          <details className="locale-menu">
+            <summary className="locale-button" aria-label={t('settings.language')} title={t('settings.language')}>
+              {LOCALE_SHORT_LABELS[locale]}
+            </summary>
+            <div className="locale-menu-list" role="menu">
+              {localeOptions.map((option) => (
+                <button
+                  className={locale === option.value ? 'active' : undefined}
+                  key={option.value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={locale === option.value}
+                  onClick={(event) => {
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                    void setLocale(option.value)
+                  }}
+                >
+                  <span>{option.label}</span>
+                  {locale === option.value && <span aria-hidden="true">✓</span>}
+                </button>
+              ))}
+            </div>
+          </details>
         </div>
       </header>
 
