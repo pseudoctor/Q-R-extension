@@ -654,7 +654,7 @@ export const messages: Record<Locale, MessageCatalog> = {
     'lesson.feynman-review.question': 'Explain this article to someone unfamiliar with it: state the core argument, most important evidence, and one limitation, then name one uncertainty you still have.',
   },
   ja: {
-    'common.productName': '问读｜AI批判的読解コーチ',
+    'common.productName': '問読｜AI批判的読解コーチ',
     'common.localOnly': 'ローカルのみ',
     'common.pageAccessible': '読み込んだ Chrome または Edge 拡張機能からこのページを開いてください。',
     'common.loading': '読み込み中…',
@@ -979,7 +979,7 @@ export const messages: Record<Locale, MessageCatalog> = {
     'lesson.feynman-review.question': 'この記事を知らない人に説明するとします。中心的な論証、最重要の根拠、1 つの限界を述べ、最後に残る不確かさを 1 つ挙げてください。',
   },
   ko: {
-    'common.productName': '问读 | AI 비판적 읽기 코치',
+    'common.productName': '문독 | AI 비판적 읽기 코치',
     'common.localOnly': '로컬 전용',
     'common.pageAccessible': '로드된 Chrome 또는 Edge 확장 프로그램에서 이 페이지를 열어 주세요.',
     'common.loading': '로드 중…',

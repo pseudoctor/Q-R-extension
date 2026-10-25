@@ -1,5 +1,5 @@
 {
-  "extName": { "message": "问读｜AI 批判性阅读教练", "description": "Extension name" },
+  "extName": { "message": "问读", "description": "Extension name" },
   "extDescription": { "message": "从网页保存文章，通过提问、论证拆解和 AI 反馈训练批判性阅读。", "description": "Extension description" },
   "actionTitle": { "message": "打开问读", "description": "Toolbar action title" },
   "captureCommand": { "message": "获取当前文章并打开问读训练页", "description": "Capture shortcut description" }
