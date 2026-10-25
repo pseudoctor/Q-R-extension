@@ -65,7 +65,7 @@ const appBundle = readdirSync(resolve(dist, 'assets'))
   .filter((file) => file.endsWith('.js'))
   .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
   .join('\n')
-for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', '文章架', '成长记录', 'obsidian://new']) {
+for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', '文章架', '成长记录', 'obsidian://new']) {
   if (!appBundle.includes(marker)) {
     throw new Error(`训练页面缺少核心交互：${marker}`)
   }

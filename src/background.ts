@@ -233,7 +233,8 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
       }),
     })
     if (!response.ok) {
-      return createError('AI_CONNECTION_FAILED', `连接失败（HTTP ${response.status}）。请检查 API key 和模型名称。`)
+      const detail = await providerResponseDetail(response)
+      return createError('AI_CONNECTION_FAILED', `连接失败（HTTP ${response.status}）${detail ? `：${detail}` : '。请检查 API key 和模型名称。'}`)
     }
     return success({ provider: provider.label, model: normalized.model })
   } catch {
@@ -348,8 +349,12 @@ async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiM
     const models = normalizeModelList(provider.id, payload)
     if (!models.length) return success({ ...fallback, warning: '服务商没有返回可用模型，当前显示默认模型。' })
     return success({ models, source: 'provider' })
-  } catch {
-    return success({ ...fallback, warning: '无法自动获取最新模型，当前显示默认模型。' })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : ''
+    return success({
+      ...fallback,
+      warning: `服务商模型列表获取失败${detail ? `（${detail}）` : ''}，当前只显示默认模型。`,
+    })
   } finally {
     clearTimeout(timeout)
   }
@@ -403,10 +408,37 @@ function modelsUrl(providerId: AiSettings['provider'], baseUrl: string) {
 }
 
 async function readModelJson(response: Response): Promise<unknown> {
-  if (!response.ok) throw new Error(`model list request failed: ${response.status}`)
   const text = await response.text()
+  if (!response.ok) {
+    const detail = extractProviderError(text)
+    throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ''}`)
+  }
   if (text.length > 1_000_000) throw new Error('model list response too large')
-  return JSON.parse(text) as unknown
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new Error('服务商模型列表不是有效 JSON')
+  }
+}
+
+async function providerResponseDetail(response: Response) {
+  try {
+    return extractProviderError(await response.text())
+  } catch {
+    return ''
+  }
+}
+
+function extractProviderError(text: string) {
+  try {
+    const payload: unknown = JSON.parse(text)
+    if (!isRecord(payload)) return ''
+    const error = isRecord(payload.error) ? payload.error : payload
+    const message = error.message
+    return typeof message === 'string' ? message.replace(/[\r\n]+/g, ' ').slice(0, 240) : ''
+  } catch {
+    return ''
+  }
 }
 
 function rawModelItems(providerId: AiSettings['provider'], payload: unknown): unknown[] {

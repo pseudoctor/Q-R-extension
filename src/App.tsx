@@ -355,6 +355,8 @@ function SettingsPage() {
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
   const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelSource, setModelSource] = useState<'provider' | 'fallback' | null>(null)
+  const [modelStatus, setModelStatus] = useState('')
   const [status, setStatus] = useState('')
   const [permissionStatus, setPermissionStatus] = useState('')
 
@@ -429,6 +431,8 @@ function SettingsPage() {
     const nextSettings = { ...settings, provider: providerId, model: nextProvider.defaultModel }
     setSettings(nextSettings)
     setModelOptions([])
+    setModelSource(null)
+    setModelStatus('')
     setPermissionStatus('')
     setStatus('')
     if (nextSettings.apiKey.trim()) void refreshModels(nextSettings, true)
@@ -437,6 +441,7 @@ function SettingsPage() {
   async function refreshModels(settingsOverride: AiSettings = settings, requestPermission = true) {
     setModelsLoading(true)
     setStatus('')
+    setModelStatus('')
     const selectedProvider = providerById(settingsOverride.provider)
     let granted = false
     if (requestPermission) {
@@ -459,11 +464,12 @@ function SettingsPage() {
     })
     setModelsLoading(false)
     if (!response.ok) {
-      setStatus(errorMessage(response.error))
+      setModelStatus(errorMessage(response.error))
       return
     }
     setModelOptions(response.data.models)
-    setStatus(response.data.warning ?? `已获取 ${response.data.models.length} 个可用模型。`)
+    setModelSource(response.data.source)
+    setModelStatus(response.data.warning ?? `已获取 ${response.data.models.length} 个可用模型。`)
   }
 
   return (
@@ -504,7 +510,8 @@ function SettingsPage() {
               <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels()} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? '获取中…' : '刷新模型'}</button>
               </div>
             </div>
-            <small>{modelOptions.length ? `已加载 ${modelOptions.length} 个服务商模型；上方列表显示全部结果，也可以手动输入兼容模型名。` : '可刷新服务商模型列表，也可以手动输入兼容模型名。'}</small>
+            <small>{modelSource === 'fallback' ? '服务商列表获取失败，当前仅显示默认模型；请根据下方提示修正后重新刷新。' : modelOptions.length ? `已加载 ${modelOptions.length} 个服务商模型；上方列表显示全部结果，也可以手动输入兼容模型名。` : '可刷新服务商模型列表，也可以手动输入兼容模型名。'}</small>
+            {modelStatus && <small className="model-status" role="status">{modelStatus}</small>}
           </label>
           <label>
             API key
