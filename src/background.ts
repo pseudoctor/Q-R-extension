@@ -7,6 +7,7 @@ import type {
   ExtensionError,
   ExtensionMessage,
   ExtensionResponse,
+  PreReadingPredictionDraft,
   SavedArticle,
   StorageState,
   TrainingSession,
@@ -37,6 +38,7 @@ import {
 import { readAiSettings, writeAiSettings } from './storage/ai'
 
 const TRAINING_PAGE = 'training.html'
+const PRE_READING_PREDICTION_DRAFT_KEY = 'preReadingPredictionDraft'
 
 type PageExtraction = {
   title: string
@@ -73,6 +75,17 @@ async function getStoredState(): Promise<StorageState> {
     'lastTrainingTabId',
     'lastPrintTabId',
   ]) as Promise<StorageState>
+}
+
+async function getPreReadingPredictionDraft(): Promise<PreReadingPredictionDraft | null> {
+  const stored = await chrome.storage.local.get(PRE_READING_PREDICTION_DRAFT_KEY) as StorageState
+  const draft = stored.preReadingPredictionDraft
+  if (!draft || typeof draft.value !== 'string' || typeof draft.updatedAt !== 'string') return null
+  return {
+    articleId: typeof draft.articleId === 'string' ? draft.articleId : null,
+    value: draft.value.slice(0, 2_000),
+    updatedAt: draft.updatedAt,
+  }
 }
 
 async function captureCurrentPage(
@@ -124,6 +137,7 @@ async function captureCurrentPage(
 
   try {
     await chrome.storage.local.set({ pendingCapture: capture })
+    await chrome.storage.local.remove(PRE_READING_PREDICTION_DRAFT_KEY)
   } catch {
     return createError('STORAGE_FAILED', '文章暂时无法保存到插件本地存储。')
   }
@@ -625,11 +639,26 @@ async function handleMessage(
       return captureAndOpen(message.source)
     case 'open-training-page':
       return openTrainingPage()
+    case 'open-manual-paste-page':
+      await chrome.storage.local.set({ pendingCapture: null })
+      await chrome.storage.local.remove(PRE_READING_PREDICTION_DRAFT_KEY)
+      return openTrainingPage()
     case 'open-settings':
       return openSettingsPage()
     case 'get-pending-capture': {
       const state = await getStoredState()
       return success(state.pendingCapture ?? null)
+    }
+    case 'get-pre-reading-prediction-draft':
+      return success(await getPreReadingPredictionDraft())
+    case 'save-pre-reading-prediction-draft': {
+      const draft: PreReadingPredictionDraft = {
+        articleId: message.articleId ?? null,
+        value: message.value.slice(0, 2_000),
+        updatedAt: new Date().toISOString(),
+      }
+      await chrome.storage.local.set({ [PRE_READING_PREDICTION_DRAFT_KEY]: draft })
+      return success(null)
     }
     case 'clear-pending-capture':
       await chrome.storage.local.set({ pendingCapture: null })

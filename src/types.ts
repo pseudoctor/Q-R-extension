@@ -76,6 +76,12 @@ export type CaptureRecord = {
   source: CaptureSource
 }
 
+export type PreReadingPredictionDraft = {
+  articleId: string | null
+  value: string
+  updatedAt: string
+}
+
 export type SavedArticle = CaptureRecord & {
   isFavorite: boolean
   savedAt: string
@@ -131,8 +137,11 @@ export type ExtensionError = {
 export type ExtensionMessage =
   | { type: 'capture-current-page'; source: CaptureSource }
   | { type: 'open-training-page' }
+  | { type: 'open-manual-paste-page' }
   | { type: 'open-settings' }
   | { type: 'get-pending-capture' }
+  | { type: 'get-pre-reading-prediction-draft' }
+  | { type: 'save-pre-reading-prediction-draft'; articleId?: string; value: string }
   | { type: 'clear-pending-capture' }
   | { type: 'get-saved-articles' }
   | { type: 'open-saved-article'; articleId: string }
@@ -160,6 +169,7 @@ export type ExtensionResponse<T> =
 
 export type StorageState = {
   pendingCapture?: CaptureRecord | null
+  preReadingPredictionDraft?: PreReadingPredictionDraft | null
   savedArticles?: SavedArticleStore | SavedArticle[]
   trainingSessions?: TrainingSessionStore | TrainingSession[]
   aiSettings?: AiSettings

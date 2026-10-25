@@ -8,6 +8,7 @@ import type {
   ExtensionError,
   ExtensionMessage,
   ExtensionResponse,
+  PreReadingPredictionDraft,
   SavedArticle,
   TrainingSession,
 } from './types'
@@ -150,11 +151,11 @@ function SidePanel() {
     setStatus(errorMessage(response.error))
   }
 
-  const openTrainingPage = async () => {
+  const openManualPastePage = async () => {
     const response = await sendExtensionMessage<{ tabId: number | undefined }>({
-      type: 'open-training-page',
+      type: 'open-manual-paste-page',
     })
-    setStatus(response.ok ? '已打开训练页。' : errorMessage(response.error))
+    setStatus(response.ok ? '已打开手动粘贴页面。' : errorMessage(response.error))
   }
 
   const openSavedArticle = async (articleId: string) => {
@@ -246,8 +247,8 @@ function SidePanel() {
         <button className="primary-button full-width" type="button" onClick={captureCurrentPage} disabled={loading}>
           {loading ? '正在读取…' : '获取当前文章'}
         </button>
-        <button className="text-button full-width" type="button" onClick={openTrainingPage}>
-          打开空白训练页
+        <button className="text-button full-width" type="button" onClick={openManualPastePage}>
+          手动粘贴文章
         </button>
         <p className="status-message" role="status">{status}</p>
       </section>
@@ -576,12 +577,13 @@ function TrainingPage() {
 
   useEffect(() => {
     const loadCapture = async () => {
-      const response = await sendExtensionMessage<CaptureRecord | null>({
-        type: 'get-pending-capture',
-      })
-      setLoading(false)
+      const [response, draftResponse] = await Promise.all([
+        sendExtensionMessage<CaptureRecord | null>({ type: 'get-pending-capture' }),
+        sendExtensionMessage<PreReadingPredictionDraft | null>({ type: 'get-pre-reading-prediction-draft' }),
+      ])
       if (!response.ok) {
         setLoadError(errorMessage(response.error))
+        setLoading(false)
         return
       }
       if (queryError) {
@@ -595,10 +597,13 @@ function TrainingPage() {
         setPreReadingPrediction('')
         setText('')
         setSourceEditorOpen(true)
+        setLoading(false)
         return
       }
       if (!response.data) {
         setLoadError('没有找到待处理的文章。')
+        if (draftResponse.ok && draftResponse.data?.articleId === null) setPreReadingPrediction(draftResponse.data.value)
+        setLoading(false)
         return
       }
       setCapture(response.data)
@@ -607,13 +612,29 @@ function TrainingPage() {
       setUrl(response.data.url)
       setAuthor(response.data.metadata?.author ?? response.data.author ?? '')
       setSource(response.data.metadata?.source ?? '')
-      setPreReadingPrediction(response.data.preReadingPrediction ?? '')
+      const predictionDraft = draftResponse.ok && draftResponse.data?.articleId === response.data.id
+        ? draftResponse.data.value
+        : null
+      setPreReadingPrediction(predictionDraft ?? response.data.preReadingPrediction ?? '')
       setText(response.data.text)
       setSourceEditorOpen(false)
+      setLoading(false)
     }
 
     void loadCapture()
   }, [queryError])
+
+  useEffect(() => {
+    if (loading || queryError) return
+    const timer = window.setTimeout(() => {
+      void sendExtensionMessage<null>({
+        type: 'save-pre-reading-prediction-draft',
+        ...(capture?.id ? { articleId: capture.id } : {}),
+        value: preReadingPrediction,
+      })
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [capture?.id, loading, preReadingPrediction, queryError])
 
   const saveCurrentArticle = async () => {
     const trimmedText = text.trim()
