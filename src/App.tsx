@@ -362,8 +362,10 @@ function SettingsPage() {
     const timer = window.setTimeout(() => {
       void sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }).then((response) => {
         setLoaded(true)
-        if (response.ok) setSettings(response.data)
-        else setStatus(errorMessage(response.error))
+        if (response.ok) {
+          setSettings(response.data)
+          if (response.data.apiKey.trim()) void refreshModels(response.data, false)
+        } else setStatus(errorMessage(response.error))
       })
     }, 0)
     return () => window.clearTimeout(timer)
@@ -371,12 +373,13 @@ function SettingsPage() {
 
   const provider = providerById(settings.provider)
 
-  const ensurePermission = async () => {
+  async function ensurePermission(providerId: AiSettings['provider'] = settings.provider) {
     if (!extensionAvailable || !chrome.permissions) return false
-    const origins = [provider.hostPattern]
+    const selectedProvider = providerById(providerId)
+    const origins = [selectedProvider.hostPattern]
     const alreadyGranted = await chrome.permissions.contains({ origins })
     if (alreadyGranted) return true
-    setPermissionStatus(`需要允许访问 ${provider.baseUrl} 才能测试或调用该模型。`)
+    setPermissionStatus(`需要允许访问 ${selectedProvider.baseUrl} 才能测试或调用该模型。`)
     const granted = await chrome.permissions.request({ origins })
     if (!granted) {
       setPermissionStatus('未获得模型服务网络权限，配置仍会保存，但 AI 请求不会发送。')
@@ -390,12 +393,14 @@ function SettingsPage() {
     setBusy(true)
     setStatus('')
     if (settings.apiKey.trim()) await ensurePermission()
+    const savedSettings = { ...settings, apiKey: settings.apiKey.trim() }
     const response = await sendExtensionMessage<AiSettings>({
       type: 'save-ai-settings',
-      settings: { ...settings, apiKey: settings.apiKey.trim() },
+      settings: savedSettings,
     })
     setBusy(false)
     setStatus(response.ok ? '已保存到插件本地存储。API key 不会写入文章或日志。' : errorMessage(response.error))
+    if (response.ok) void refreshModels(savedSettings, false)
   }
 
   const testConnection = async () => {
@@ -411,28 +416,45 @@ function SettingsPage() {
       settings,
     })
     setTesting(false)
-    setStatus(response.ok ? `连接成功：${response.data.provider} · ${response.data.model}` : errorMessage(response.error))
+    if (!response.ok) {
+      setStatus(errorMessage(response.error))
+      return
+    }
+    await refreshModels(settings, false)
+    setStatus(`连接成功：${response.data.provider} · ${response.data.model}`)
   }
 
   const selectProvider = (providerId: AiSettings['provider']) => {
     const nextProvider = providerById(providerId)
-    setSettings((current) => ({ ...current, provider: providerId, model: nextProvider.defaultModel }))
+    const nextSettings = { ...settings, provider: providerId, model: nextProvider.defaultModel }
+    setSettings(nextSettings)
     setModelOptions([])
     setPermissionStatus('')
     setStatus('')
+    if (nextSettings.apiKey.trim()) void refreshModels(nextSettings, true)
   }
 
-  const refreshModels = async () => {
+  async function refreshModels(settingsOverride: AiSettings = settings, requestPermission = true) {
     setModelsLoading(true)
     setStatus('')
-    const granted = await ensurePermission()
+    const selectedProvider = providerById(settingsOverride.provider)
+    let granted = false
+    if (requestPermission) {
+      granted = await ensurePermission(settingsOverride.provider)
+    } else {
+      try {
+        granted = await chrome.permissions.contains({ origins: [selectedProvider.hostPattern] })
+      } catch {
+        granted = false
+      }
+    }
     if (!granted) {
       setModelsLoading(false)
       return
     }
     const response = await sendExtensionMessage<{ models: AiModelOption[]; source: 'provider' | 'fallback'; warning?: string }>({
       type: 'list-ai-models',
-      settings,
+      settings: settingsOverride,
       force: true,
     })
     setModelsLoading(false)
@@ -472,14 +494,17 @@ function SettingsPage() {
           </label>
           <label>
             模型名称
-            <div className="model-input-row">
-              <input list="ai-model-options" value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} />
+            <div className="model-input-stack">
+              <select className="model-options-select" aria-label="服务商模型列表" value={modelOptions.some((model) => model.id === settings.model) ? settings.model : ''} onChange={(event) => { if (event.target.value) setSettings((current) => ({ ...current, model: event.target.value })) }}>
+                <option value="">{modelOptions.length ? `从已加载的 ${modelOptions.length} 个模型中选择` : '点击刷新获取服务商模型'}</option>
+                {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label === model.id ? model.id : `${model.label} · ${model.id}`}</option>)}
+              </select>
+              <div className="model-input-row">
+              <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} aria-label="手动输入模型名称" />
               <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels()} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? '获取中…' : '刷新模型'}</button>
+              </div>
             </div>
-            <datalist id="ai-model-options">
-              {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-            </datalist>
-            <small>{modelOptions.length ? `已加载 ${modelOptions.length} 个服务商模型，也可以手动输入兼容模型名。` : '可刷新服务商模型列表，也可以手动输入兼容模型名。'}</small>
+            <small>{modelOptions.length ? `已加载 ${modelOptions.length} 个服务商模型；上方列表显示全部结果，也可以手动输入兼容模型名。` : '可刷新服务商模型列表，也可以手动输入兼容模型名。'}</small>
           </label>
           <label>
             API key

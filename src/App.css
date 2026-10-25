@@ -260,6 +260,15 @@
   gap: 8px;
 }
 
+.model-input-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.model-options-select {
+  color: var(--ink);
+}
+
 .model-input-row input {
   min-width: 0;
   flex: 1;
