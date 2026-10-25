@@ -80,14 +80,14 @@ function SidePanel() {
   const { t, locale, localeOptions, setLocale } = useI18n()
   const [articles, setArticles] = useState<SavedArticle[]>([])
   const [sessions, setSessions] = useState<Record<string, TrainingSession>>({})
-  const [status, setStatusValue] = useState(() => ({ text: t('side.statusReady'), locale }))
+  const [status, setStatusValue] = useState(() => ({ text: '', locale }))
   const [loading, setLoading] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [view, setView] = useState<'library' | 'growth'>('library')
   const [filter, setFilter] = useState<'all' | 'favorite' | 'in-progress' | 'completed'>('all')
 
   const setStatus = (text: string) => setStatusValue({ text, locale })
-  const statusText = status.locale === locale ? status.text : t('side.statusReady')
+  const statusText = status.locale === locale ? status.text : ''
 
   const loadArticles = useCallback(async () => {
     const response = await sendExtensionMessage<SavedArticle[]>({
@@ -327,7 +327,7 @@ function SidePanel() {
         <button className="text-button full-width" type="button" onClick={openManualPastePage}>
           {t('side.manualPaste')}
         </button>
-        <p className="status-message" role="status">{statusText}</p>
+        {statusText && <p className="status-message" role="status">{statusText}</p>}
       </section>
 
       <section className="saved-section">
