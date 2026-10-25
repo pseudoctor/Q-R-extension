@@ -252,7 +252,8 @@ function SidePanel() {
   return (
     <main className="app-shell side-panel-shell">
       <header className="brand-header">
-        <div>
+        <div className="brand-identity">
+          <img className="brand-logo" src="/icons/icon32.png" alt="" aria-hidden="true" />
           <h1>{t('common.productName')}</h1>
         </div>
         <div className="header-actions">
@@ -282,18 +283,6 @@ function SidePanel() {
           </details>
         </div>
       </header>
-
-      <section className="intro-card">
-        <span className="section-kicker">{t('side.currentPage')}</span>
-        <p>{t('side.shortcutHint')}</p>
-        <button className="primary-button full-width" type="button" onClick={captureCurrentPage} disabled={loading}>
-          {loading ? t('side.capturing') : t('side.capture')}
-        </button>
-        <button className="text-button full-width" type="button" onClick={openManualPastePage}>
-          {t('side.manualPaste')}
-        </button>
-        <p className="status-message" role="status">{statusText}</p>
-      </section>
 
       <details className="quick-start">
         <summary>{t('side.quickStart')}</summary>
@@ -329,10 +318,22 @@ function SidePanel() {
         </ol>
       </details>
 
+      <section className="intro-card">
+        <span className="section-kicker">{t('side.currentPage')}</span>
+        <p className="shortcut-hint">{t('side.shortcutHint')}</p>
+        <button className="primary-button full-width" type="button" onClick={captureCurrentPage} disabled={loading}>
+          {loading ? t('side.capturing') : t('side.capture')}
+        </button>
+        <button className="text-button full-width" type="button" onClick={openManualPastePage}>
+          {t('side.manualPaste')}
+        </button>
+        <p className="status-message" role="status">{statusText}</p>
+      </section>
+
       <section className="saved-section">
         <div className="section-heading">
           <div>
-            <span className="section-kicker">LOCAL LIBRARY</span>
+            <span className="section-kicker">{t('side.localLibrary')}</span>
             <h2>{view === 'library' ? t('side.library') : t('side.growth')}</h2>
           </div>
           <div className="section-heading-actions">
