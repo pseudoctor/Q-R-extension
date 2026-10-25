@@ -135,7 +135,7 @@ function validateSources(value: unknown, paragraphs: string[]) {
 }
 
 function splitParagraphs(article: string) {
-  return article.split(/\n\s*\n|\n/).map((text) => text.trim()).filter(Boolean)
+  return article.split(/\n\s*\n/).map((text) => text.trim()).filter(Boolean)
 }
 
 function emptyMetadata(): ArticleMetadata {

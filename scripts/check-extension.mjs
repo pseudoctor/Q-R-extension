@@ -31,8 +31,11 @@ for (const permission of ['activeTab', 'scripting', 'sidePanel', 'storage']) {
   }
 }
 
-if (manifest.host_permissions) {
-  throw new Error('当前 MVP 不应声明 host_permissions。')
+const hostPermissions = new Set(manifest.host_permissions ?? [])
+for (const origin of ['http://*/*', 'https://*/*']) {
+  if (!hostPermissions.has(origin)) {
+    throw new Error(`manifest 缺少正文捕获所需的站点权限：${origin}`)
+  }
 }
 
 const command = manifest.commands?.['capture-and-open']
@@ -55,7 +58,7 @@ for (const origin of [
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
-for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'currentStep', 'articleBody', 'itemprop=', '浏览器内部页', '/chat/completions', 'AbortController']) {
+for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'currentStep', 'articleBody', 'blocks', 'advertisement', 'narrated by', 'itemprop=', '浏览器内部页', '/chat/completions', 'AbortController']) {
   if (!background.includes(marker)) {
     throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
   }
@@ -65,7 +68,7 @@ const appBundle = readdirSync(resolve(dist, 'assets'))
   .filter((file) => file.endsWith('.js'))
   .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
   .join('\n')
-for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', '文章架', '成长记录', 'obsidian://new']) {
+for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new']) {
   if (!appBundle.includes(marker)) {
     throw new Error(`训练页面缺少核心交互：${marker}`)
   }

@@ -1,23 +1,24 @@
 import type { SavedArticle, SavedArticleStore, StorageState } from '../types'
+import { normalizeArticleBlocks } from '../articles/format'
 
 export const SAVED_ARTICLES_KEY = 'savedArticles'
 
 export function normalizeSavedArticleStore(value: unknown): SavedArticleStore {
   if (Array.isArray(value)) {
     return {
-      version: 1,
+      version: 2,
       items: value.filter(isSavedArticle).map(withFavoriteDefault),
     }
   }
 
-  if (isRecord(value) && value.version === 1 && Array.isArray(value.items)) {
+  if (isRecord(value) && (value.version === 1 || value.version === 2) && Array.isArray(value.items)) {
     return {
-      version: 1,
+      version: 2,
       items: value.items.filter(isSavedArticle).map(withFavoriteDefault),
     }
   }
 
-  return { version: 1, items: [] }
+  return { version: 2, items: [] }
 }
 
 export async function readSavedArticles(): Promise<SavedArticle[]> {
@@ -26,7 +27,7 @@ export async function readSavedArticles(): Promise<SavedArticle[]> {
 }
 
 export async function writeSavedArticles(items: SavedArticle[]) {
-  const store: SavedArticleStore = { version: 1, items }
+  const store: SavedArticleStore = { version: 2, items }
   await chrome.storage.local.set({ [SAVED_ARTICLES_KEY]: store })
 }
 
@@ -68,6 +69,10 @@ function isSavedArticle(value: unknown): value is SavedArticle {
 }
 
 function withFavoriteDefault(article: SavedArticle): SavedArticle {
-  return { ...article, isFavorite: article.isFavorite === true }
+  return {
+    ...article,
+    blocks: normalizeArticleBlocks(article.blocks, article.text),
+    isFavorite: article.isFavorite === true,
+  }
 }
 

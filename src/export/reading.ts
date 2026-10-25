@@ -1,4 +1,6 @@
-import type { CaptureRecord, SavedArticle, TrainingSession } from '../types'
+import type { ArticleBlock, CaptureRecord, SavedArticle, TrainingSession } from '../types'
+import { articleBlocksToText, getArticleBlocks } from '../articles/format'
+import { articleBlocksToMarkdown } from './markdown'
 import { LESSON_STEPS } from '../training/lessons'
 
 const STAGE_NAMES = ['基础理解', '批判性提问', '简化图尔敏', '完整论证']
@@ -12,7 +14,7 @@ const DIMENSION_LABELS = {
 export const MAX_OBSIDIAN_URI_LENGTH = 6_000
 
 export type ReadingExportModel = {
-  exportVersion: 1
+  exportVersion: 2
   title: string
   metadata: { subtitle: string; author: string; source: string }
   url: string
@@ -22,6 +24,7 @@ export type ReadingExportModel = {
   status: 'unread' | 'in-progress' | 'completed'
   progress: { completed: number; total: number }
   averageScore: number | null
+  articleBlocks: ArticleBlock[]
   articleParagraphs: string[]
   turns: Array<{
     number: number
@@ -46,8 +49,9 @@ export function buildReadingExportModel(
     source: '',
   }
   const turns = session?.turns ?? []
+  const articleBlocks = getArticleBlocks(article.text, article.blocks)
   return {
-    exportVersion: 1,
+    exportVersion: 2,
     title: article.title.trim() || '未命名文章',
     metadata: {
       subtitle: metadata.subtitle.trim(),
@@ -61,7 +65,8 @@ export function buildReadingExportModel(
     status: turns.length >= LESSON_STEPS.length ? 'completed' : turns.length ? 'in-progress' : 'unread',
     progress: { completed: Math.min(LESSON_STEPS.length, turns.length), total: LESSON_STEPS.length },
     averageScore: averageScore(turns),
-    articleParagraphs: splitArticle(article.text),
+    articleBlocks,
+    articleParagraphs: splitArticle(articleBlocksToText(articleBlocks)),
     turns: turns.map((turn, index) => ({
       number: index + 1,
       stage: STAGE_NAMES[Math.min(3, Math.floor(turn.stepIndex / 2))] ?? STAGE_NAMES[0],
@@ -130,7 +135,8 @@ export function generateReadingMarkdown(model: ReadingExportModel) {
     '',
   ]
 
-  model.articleParagraphs.forEach((paragraph) => lines.push(escapeMarkdownBlock(paragraph), ''))
+  const articleMarkdown = articleBlocksToMarkdown(model.articleBlocks)
+  if (articleMarkdown) lines.push(articleMarkdown, '')
   lines.push('## 训练记录', '')
   if (!model.turns.length) lines.push('尚未提交训练回答。', '')
   model.turns.forEach((turn) => {
@@ -154,9 +160,7 @@ export function generateReadingMarkdown(model: ReadingExportModel) {
 }
 
 export function generateReadingPdfHtml(model: ReadingExportModel) {
-  const paragraphs = model.articleParagraphs
-    .map((paragraph, index) => `<p class="source-paragraph"><span>${String(index + 1).padStart(2, '0')}</span>${escapeHtml(paragraph)}</p>`)
-    .join('')
+  const paragraphs = articleBlocksToHtml(model.articleBlocks)
   const turns = model.turns.length
     ? model.turns.map((turn) => `<article class="turn"><h3>第 ${turn.number} 轮 · ${escapeHtml(turn.stage)} · ${escapeHtml(turn.step)}</h3><h4>问题</h4>${htmlParagraphs(turn.question)}<h4>我的回答</h4>${htmlParagraphs(turn.answer)}${feedbackHtml(turn.feedback)}</article>`).join('')
     : '<p>尚未提交训练回答。</p>'
@@ -175,6 +179,23 @@ export function buildObsidianUrl(markdown: string, options: { vault?: string; pa
   const fallback = params.filter((param) => !param.startsWith('content='))
   fallback.push(encodedParam('clipboard', 'true'))
   return { url: `obsidian://new?${fallback.join('&')}`, useClipboard: true }
+}
+
+function articleBlocksToHtml(blocks: ArticleBlock[]) {
+  let sourceNumber = 0
+  const number = () => String(++sourceNumber).padStart(2, '0')
+  return blocks.map((block) => {
+    if (block.type === 'paragraph') return `<p class="source-paragraph"><span>${number()}</span>${escapeHtml(block.text)}</p>`
+    if (block.type === 'heading') return `<h${block.level} class="source-heading"><span>${number()}</span>${escapeHtml(block.text)}</h${block.level}>`
+    if (block.type === 'quote') return `<blockquote class="source-quote"><span>${number()}</span>${escapeHtml(block.text)}</blockquote>`
+    if (block.type === 'list') {
+      const tag = block.ordered ? 'ol' : 'ul'
+      return `<${tag} class="source-list">${block.items.map((item) => `<li><span>${number()}</span>${escapeHtml(item)}</li>`).join('')}</${tag}>`
+    }
+    if (block.type === 'code') return `<pre class="source-code"><code>${escapeHtml(block.text)}</code></pre>`
+    if (block.type === 'image') return `<figure class="source-image"><img src="${escapeHtml(block.src)}" alt="${escapeHtml(block.alt)}" />${block.alt ? `<figcaption>${escapeHtml(block.alt)}</figcaption>` : ''}</figure>`
+    return '<hr />'
+  }).join('')
 }
 
 function averageScore(turns: TrainingSession['turns']) {
@@ -226,7 +247,7 @@ function feedbackHtml(feedback: NonNullable<TrainingSession['turns'][number]['fe
 }
 
 function splitArticle(article: string) {
-  return article.split(/\n\s*\n|\n/).map((paragraph) => paragraph.trim()).filter(Boolean)
+  return article.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)
 }
 
 function escapeMarkdownBlock(value: string) {

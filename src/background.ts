@@ -1,6 +1,7 @@
 import type {
   AiModelOption,
   AiSettings,
+  ArticleBlock,
   CaptureRecord,
   ErrorCode,
   ExtensionError,
@@ -10,6 +11,7 @@ import type {
   StorageState,
   TrainingSession,
 } from './types'
+import { normalizeArticleBlocks } from './articles/format'
 import {
   buildGradePrompt,
   buildStartPrompt,
@@ -41,6 +43,7 @@ type PageExtraction = {
   url: string
   author?: string
   text: string
+  blocks?: ArticleBlock[]
   selectedText?: string
   error?: {
     code: ErrorCode
@@ -87,11 +90,17 @@ async function captureCurrentPage(
       func: extractArticleFromPage,
     })
     extraction = results[0]?.result as PageExtraction | undefined
-  } catch {
-    return createError(
-      'PAGE_NOT_ACCESSIBLE',
-      '当前页面不允许插件读取（浏览器内部页、扩展页、商店页和部分 PDF 不支持）。请切换到普通网页，或手动粘贴文章。',
-    )
+  } catch (error) {
+    if (isRestrictedPageError(error)) {
+      const isWebPage = /^https?:\/\//i.test(tab.url ?? '')
+      return createError(
+        'PAGE_NOT_ACCESSIBLE',
+        isWebPage
+          ? '插件当前没有获得该网站的读取权限，请在扩展菜单中允许访问此网站后重试。'
+          : '当前页面不允许插件读取（浏览器内部页、扩展页、商店页和部分 PDF 不支持）。请切换到普通网页，或手动粘贴文章。',
+      )
+    }
+    return createError('EXTRACTION_FAILED', '读取当前网页失败，请重新加载扩展后重试。')
   }
 
   if (!extraction) {
@@ -107,6 +116,7 @@ async function captureCurrentPage(
     url: extraction.url,
     ...(extraction.author ? { author: extraction.author } : {}),
     text: extraction.text,
+    ...(extraction.blocks ? { blocks: extraction.blocks } : {}),
     ...(extraction.selectedText ? { selectedText: extraction.selectedText } : {}),
     capturedAt: new Date().toISOString(),
     source,
@@ -119,6 +129,17 @@ async function captureCurrentPage(
   }
 
   return success({ captureId: capture.id })
+}
+
+function isRestrictedPageError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : ''
+  return message.includes('cannot access contents of the page') ||
+    message.includes('extensions gallery') ||
+    message.includes('chrome://') ||
+    message.includes('chrome-extension://') ||
+    message.includes('edge://') ||
+    message.includes('file://') ||
+    message.includes('pdf')
 }
 
 async function openTrainingPage(
@@ -198,6 +219,7 @@ async function saveArticle(
       text,
       metadata,
       ...(metadata.author ? { author: metadata.author } : {}),
+      blocks: normalizeArticleBlocks(article.blocks, text),
       isFavorite: existing?.isFavorite ?? false,
       savedAt: new Date().toISOString(),
     }
@@ -723,10 +745,11 @@ function extractArticleFromPage(): PageExtraction {
   const normalize = (value: string) =>
     value
       .replace(/\u00a0/g, ' ')
-      .split(/\n+/)
-      .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+      .replace(/\r\n?/g, '\n')
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.split('\n').map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean).join('\n').trim())
       .filter(Boolean)
-      .join('\n')
+      .join('\n\n')
       .slice(0, maxArticleTextLength)
 
   const metaContent = (selector: string) => document.querySelector(selector)?.getAttribute('content')?.trim() ?? ''
@@ -736,11 +759,13 @@ function extractArticleFromPage(): PageExtraction {
   const selectedText = normalize(window.getSelection()?.toString() ?? '')
 
   if (selectedText.length >= minSelectedTextLength) {
+    const blocks = limitBlocks(textToBlocks(selectedText))
     return {
       title,
       url,
       ...(author ? { author } : {}),
-      text: selectedText,
+      text: blocksToText(blocks),
+      blocks,
       selectedText,
     }
   }
@@ -761,10 +786,12 @@ function extractArticleFromPage(): PageExtraction {
   }
 
   let bestText = ''
+  let bestBlocks: ArticleBlock[] = []
   let bestScore = Number.NEGATIVE_INFINITY
   for (const [candidate, weight] of candidates) {
     const clone = cleanClone(candidate)
-    const text = normalize(clone.innerText)
+    const blocks = extractBlocks(clone)
+    const text = blocksToText(blocks) || normalize(clone.innerText)
     if (!text) continue
     const paragraphCount = Array.from(clone.querySelectorAll('p'))
       .filter((paragraph) => normalize(paragraph.innerText).length >= 40)
@@ -777,6 +804,7 @@ function extractArticleFromPage(): PageExtraction {
     if (score > bestScore) {
       bestScore = score
       bestText = text
+      bestBlocks = blocks
     }
   }
 
@@ -784,13 +812,18 @@ function extractArticleFromPage(): PageExtraction {
   const text = structuredText.length >= minArticleTextLength && structuredText.length > bestText.length
     ? structuredText
     : bestText
+  const blocks = limitBlocks(structuredText.length >= minArticleTextLength && structuredText.length > bestText.length
+    ? textToBlocks(structuredText)
+    : bestBlocks)
+  const normalizedText = blocksToText(blocks) || text.slice(0, maxArticleTextLength)
 
-  if (text.length < minArticleTextLength) {
+  if (normalizedText.length < minArticleTextLength) {
     return {
       title,
       url,
       ...(author ? { author } : {}),
-      text,
+      text: normalizedText,
+      blocks,
       error: {
         code: 'ARTICLE_TOO_SHORT',
         message: '没有识别到足够长的正文，请先选择正文后重试，或在训练页手动粘贴文章。',
@@ -802,18 +835,151 @@ function extractArticleFromPage(): PageExtraction {
     title,
     url,
     ...(author ? { author } : {}),
-    text,
+    text: normalizedText,
+    blocks,
+  }
+
+  function textToBlocks(value: string): ArticleBlock[] {
+    return value
+      .replace(/\r\n?/g, '\n')
+      .split(/\n\s*\n/)
+      .map((text) => text.split('\n').map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean).join('\n').trim())
+      .filter(Boolean)
+      .map((text) => ({ type: 'paragraph', text }))
+  }
+
+  function blocksToText(blocks: ArticleBlock[]) {
+    return blocks.flatMap((block) => {
+      if (block.type === 'list') return [block.items.join('\n')]
+      if (block.type === 'image') return block.alt ? [block.alt] : []
+      if (block.type === 'divider') return []
+      return [block.text]
+    }).join('\n\n').trim().slice(0, maxArticleTextLength)
+  }
+
+  function limitBlocks(blocks: ArticleBlock[]): ArticleBlock[] {
+    let remaining = maxArticleTextLength
+    const limited: ArticleBlock[] = []
+    for (const block of blocks) {
+      if (remaining <= 0) break
+      if (block.type === 'image' || block.type === 'divider') {
+        limited.push(block)
+        continue
+      }
+      if (block.type === 'list') {
+        const items: string[] = []
+        for (const item of block.items) {
+          if (remaining <= 0) break
+          const value = item.slice(0, remaining)
+          if (value) {
+            items.push(value)
+            remaining -= value.length
+          }
+        }
+        if (items.length) limited.push({ ...block, items })
+        continue
+      }
+      const text = block.text.slice(0, remaining)
+      if (!text) break
+      limited.push({ ...block, text })
+      remaining -= text.length
+    }
+    return limited
+  }
+
+  function extractBlocks(root: HTMLElement): ArticleBlock[] {
+    const blocks: ArticleBlock[] = []
+    const addText = (type: 'paragraph' | 'heading' | 'quote', value: string, level?: number) => {
+      const text = value.replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').split(/\n+/).map((line) => line.trim()).filter(Boolean).join(type === 'quote' ? '\n' : ' ').trim()
+      if (!text) return
+      if (type === 'heading') blocks.push({ type, level: level ?? 2, text })
+      else blocks.push({ type, text })
+    }
+    const visit = (element: Element) => {
+      const tag = element.tagName.toLowerCase()
+      if (/^h[1-6]$/.test(tag)) {
+        addText('heading', element.textContent ?? '', Number(tag.slice(1)))
+        return
+      }
+      if (tag === 'p') {
+        addText('paragraph', element.textContent ?? '')
+        return
+      }
+      if (tag === 'blockquote') {
+        addText('quote', element.textContent ?? '')
+        return
+      }
+      if (tag === 'pre') {
+        const text = (element.textContent ?? '').replace(/\r\n?/g, '\n').trim()
+        if (text) {
+          const code = element.querySelector('code')
+          const language = Array.from(code?.classList ?? []).find((name) => name.startsWith('language-'))?.slice(9)
+          blocks.push({ type: 'code', ...(language ? { language } : {}), text })
+        }
+        return
+      }
+      if (tag === 'ul' || tag === 'ol') {
+        const items = Array.from(element.children)
+          .filter((child) => child.tagName.toLowerCase() === 'li')
+          .map((item) => {
+            const clone = item.cloneNode(true) as HTMLElement
+            clone.querySelectorAll('ul, ol').forEach((nested) => nested.remove())
+            return (clone.textContent ?? '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim()
+          })
+          .filter(Boolean)
+        if (items.length) blocks.push({ type: 'list', ordered: tag === 'ol', items })
+        return
+      }
+      if (tag === 'figure') {
+        const image = element.querySelector('img')
+        if (image) visit(image)
+        const caption = element.querySelector('figcaption')
+        if (caption) addText('paragraph', caption.textContent ?? '')
+        return
+      }
+      if (tag === 'img') {
+        const rawSrc = (element as HTMLImageElement).currentSrc || (element as HTMLImageElement).src
+        try {
+          const src = new URL(rawSrc, window.location.href).href
+          if (/^https?:$/i.test(new URL(src).protocol)) blocks.push({ type: 'image', src, alt: (element.getAttribute('alt') ?? '').trim() })
+        } catch {
+          return
+        }
+        return
+      }
+      if (tag === 'hr') {
+        blocks.push({ type: 'divider' })
+        return
+      }
+      const children = Array.from(element.children)
+      const hasBlockChildren = children.some((child) => /^(article|blockquote|div|figure|h[1-6]|li|main|ol|p|pre|section|ul|hr)$/i.test(child.tagName))
+      if (!children.length || !hasBlockChildren) {
+        addText('paragraph', element.textContent ?? '')
+        return
+      }
+      children.forEach(visit)
+    }
+    visit(root)
+    return blocks
   }
 
   function cleanClone(element: HTMLElement) {
     const clone = element.cloneNode(true) as HTMLElement
     clone.querySelectorAll([
-      'script', 'style', 'noscript', 'nav', 'aside', 'footer', 'form', 'header', 'svg',
+      'script', 'style', 'noscript', 'nav', 'aside', 'footer', 'form', 'header', 'svg', 'button',
       'iframe', 'canvas', 'video', 'audio', '[aria-hidden="true"]', '[role="navigation"]',
       '[role="complementary"]', '[role="contentinfo"]',
       '.ad', '.ads', '.advertisement', '.advert', '.sidebar', '.comments', '.comment',
-      '.related', '.share', '.social', '.newsletter', '.cookie',
+      '.related', '.share', '.social', '.newsletter', '.cookie', 'ins',
+      '[data-testid*="ad" i]', '[aria-label*="advertisement" i]', '[class*="audio" i]', '[class*="listen" i]',
     ].join(',')).forEach((element) => element.remove())
+    clone.querySelectorAll<HTMLElement>('div, section').forEach((element) => {
+      if (element === clone) return
+      const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim()
+      const isAdvertisement = /^advertisement$/i.test(text)
+      const isAudioPlayer = text.length < 320 && /narrated by/i.test(text) && /\d{1,2}:\d{2}/.test(text)
+      if (isAdvertisement || isAudioPlayer) element.remove()
+    })
     return clone
   }
 

@@ -19,6 +19,10 @@
     "sidePanel",
     "storage"
   ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "optional_host_permissions": [
     "https://api.openai.com/*",
     "https://api.deepseek.com/*",

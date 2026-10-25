@@ -4,12 +4,14 @@ import type {
   AiSettings,
   AiModelOption,
   AiFeedback,
+  ArticleBlock,
   ExtensionError,
   ExtensionMessage,
   ExtensionResponse,
   SavedArticle,
   TrainingSession,
 } from './types'
+import { getArticleBlocks } from './articles/format'
 import { AI_PROVIDERS, defaultAiSettings, providerById } from './ai/providers'
 import {
   buildObsidianUrl,
@@ -560,6 +562,7 @@ function TrainingPage() {
   const [author, setAuthor] = useState('')
   const [source, setSource] = useState('')
   const [text, setText] = useState('')
+  const [sourceEditorOpen, setSourceEditorOpen] = useState(true)
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -580,8 +583,20 @@ function TrainingPage() {
         setLoadError(errorMessage(response.error))
         return
       }
-      if (!response.data) {
+      if (queryError) {
         setLoadError(queryError)
+        setCapture(null)
+        setTitle('')
+        setSubtitle('')
+        setUrl('')
+        setAuthor('')
+        setSource('')
+        setText('')
+        setSourceEditorOpen(true)
+        return
+      }
+      if (!response.data) {
+        setLoadError('没有找到待处理的文章。')
         return
       }
       setCapture(response.data)
@@ -591,6 +606,7 @@ function TrainingPage() {
       setAuthor(response.data.metadata?.author ?? response.data.author ?? '')
       setSource(response.data.metadata?.source ?? '')
       setText(response.data.text)
+      setSourceEditorOpen(false)
     }
 
     void loadCapture()
@@ -604,6 +620,10 @@ function TrainingPage() {
     }
 
     setSaving(true)
+    const blocks = getArticleBlocks(
+      trimmedText,
+      capture && capture.text.trim() === trimmedText ? capture.blocks : undefined,
+    )
     const article: CaptureRecord = {
       id: capture?.id ?? crypto.randomUUID(),
       title: title.trim() || '未命名文章',
@@ -615,6 +635,7 @@ function TrainingPage() {
       url: url.trim(),
       ...(author.trim() ? { author: author.trim() } : {}),
       text: trimmedText,
+      blocks,
       ...(capture?.selectedText ? { selectedText: capture.selectedText } : {}),
       capturedAt: capture?.capturedAt ?? new Date().toISOString(),
       source: capture?.source ?? 'side-panel',
@@ -634,6 +655,7 @@ function TrainingPage() {
   }
 
   const currentArticle = (): CaptureRecord | SavedArticle => {
+    const trimmedText = text.trim()
     const fields = {
       title: title.trim() || '未命名文章',
       metadata: {
@@ -643,7 +665,11 @@ function TrainingPage() {
       },
       url: url.trim(),
       ...(author.trim() ? { author: author.trim() } : {}),
-      text: text.trim(),
+      text: trimmedText,
+      blocks: getArticleBlocks(
+        trimmedText,
+        capture && capture.text.trim() === trimmedText ? capture.blocks : undefined,
+      ),
     }
     if (capture && 'savedAt' in capture) {
       return { ...capture, ...fields }
@@ -761,10 +787,17 @@ function TrainingPage() {
               来源说明（可选）
               <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="例如：期刊、专栏或书名" maxLength={240} />
             </label>
-            <label>
-              正文
-              <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="把文章正文粘贴到这里…" rows={22} maxLength={36_000} />
-            </label>
+            <details className="source-editor" open={sourceEditorOpen} onToggle={(event) => setSourceEditorOpen(event.currentTarget.open)}>
+              <summary>
+                <span>编辑原文</span>
+                <small>提取异常或需要手动修正时展开</small>
+              </summary>
+              <label>
+                正文
+                <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="把文章正文粘贴到这里…" rows={22} maxLength={36_000} />
+              </label>
+            </details>
+            {text.trim() && <ArticlePreview blocks={getArticleBlocks(text, capture && capture.text.trim() === text.trim() ? capture.blocks : undefined)} />}
             <div className="editor-footer">
               <span className="character-count">{text.length.toLocaleString()} 字符</span>
               <div className="editor-actions">
@@ -783,6 +816,47 @@ function TrainingPage() {
         </>
       )}
     </main>
+  )
+}
+
+function ArticlePreview({ blocks }: { blocks: ArticleBlock[] }) {
+  const sourceNumberFor = (index: number, itemIndex = 0) => {
+    const previous = blocks.slice(0, index).reduce((total, block) => {
+      if (block.type === 'list') return total + block.items.length
+      return total + (block.type === 'paragraph' || block.type === 'heading' || block.type === 'quote' ? 1 : 0)
+    }, 0)
+    const current = blocks[index]
+    const offset = current?.type === 'list' ? itemIndex : 0
+    return String(previous + offset + 1).padStart(2, '0')
+  }
+
+  return (
+    <section className="article-preview">
+      <div className="article-preview-heading">
+        <span className="section-kicker">READING PREVIEW</span>
+        <span>保留原文结构，使用插件阅读样式</span>
+      </div>
+      <article className="article-preview-content">
+        {blocks.map((block, index) => {
+          if (block.type === 'heading') {
+            const number = sourceNumberFor(index)
+            if (block.level === 1) return <h1 key={index}><span className="article-source-number">{number}</span>{block.text}</h1>
+            if (block.level === 2) return <h2 key={index}><span className="article-source-number">{number}</span>{block.text}</h2>
+            if (block.level === 3) return <h3 key={index}><span className="article-source-number">{number}</span>{block.text}</h3>
+            return <h4 key={index}><span className="article-source-number">{number}</span>{block.text}</h4>
+          }
+          if (block.type === 'paragraph') return <p key={index}><span className="article-source-number">{sourceNumberFor(index)}</span>{block.text}</p>
+          if (block.type === 'quote') return <blockquote key={index}><span className="article-source-number">{sourceNumberFor(index)}</span>{block.text}</blockquote>
+          if (block.type === 'list') {
+            const List = block.ordered ? 'ol' : 'ul'
+            return <List key={index}>{block.items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`}><span className="article-source-number">{sourceNumberFor(index, itemIndex)}</span>{item}</li>)}</List>
+          }
+          if (block.type === 'code') return <pre key={index}><code>{block.text}</code></pre>
+          if (block.type === 'image') return <figure key={index}><img src={block.src} alt={block.alt} loading="lazy" referrerPolicy="no-referrer" />{block.alt && <figcaption>{block.alt}</figcaption>}</figure>
+          return <hr key={index} />
+        })}
+      </article>
+    </section>
   )
 }
 

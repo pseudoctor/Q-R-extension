@@ -10,6 +10,15 @@ export type ArticleMetadata = {
   source: string
 }
 
+export type ArticleBlock =
+  | { type: 'paragraph'; text: string }
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'quote'; text: string }
+  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'code'; language?: string; text: string }
+  | { type: 'image'; src: string; alt: string }
+  | { type: 'divider' }
+
 export type AiSettings = {
   provider: AiProviderId
   model: string
@@ -60,6 +69,7 @@ export type CaptureRecord = {
   metadata?: ArticleMetadata
   author?: string
   text: string
+  blocks?: ArticleBlock[]
   selectedText?: string
   capturedAt: string
   source: CaptureSource
@@ -71,7 +81,7 @@ export type SavedArticle = CaptureRecord & {
 }
 
 export type SavedArticleStore = {
-  version: 1
+  version: 2
   items: SavedArticle[]
 }
 
