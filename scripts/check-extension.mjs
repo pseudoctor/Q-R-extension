@@ -19,6 +19,10 @@ const requiredFiles = [
   'training.html',
   'print.html',
   'settings.html',
+  manifest.icons?.['16'],
+  manifest.icons?.['32'],
+  manifest.icons?.['48'],
+  manifest.icons?.['128'],
 ]
 
 for (const file of requiredFiles) {
@@ -70,7 +74,7 @@ if (!appBundle.includes('generateReadingMarkdown') && !appBundle.includes('完�
   throw new Error('训练页面缺少完整阅读记录导出。')
 }
 
-for (const asset of ['assets/donate-alipay.jpg', 'assets/donate-paypal.jpg']) {
+for (const asset of ['assets/donate-alipay.jpg', 'assets/donate-paypal.jpg', 'assets/qr-logo-300.png']) {
   if (!existsSync(resolve(dist, asset))) {
     throw new Error(`构建产物缺少打赏资源：${asset}`)
   }
