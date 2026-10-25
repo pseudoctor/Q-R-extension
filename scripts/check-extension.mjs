@@ -55,7 +55,7 @@ for (const origin of [
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
-for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'currentStep', '/chat/completions', 'AbortController']) {
+for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'currentStep', 'articleBody', 'itemprop=', '浏览器内部页', '/chat/completions', 'AbortController']) {
   if (!background.includes(marker)) {
     throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
   }

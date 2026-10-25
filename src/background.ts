@@ -90,7 +90,7 @@ async function captureCurrentPage(
   } catch {
     return createError(
       'PAGE_NOT_ACCESSIBLE',
-      '当前页面不允许插件读取，请切换到普通网页后重试。',
+      '当前页面不允许插件读取（浏览器内部页、扩展页、商店页和部分 PDF 不支持）。请切换到普通网页，或手动粘贴文章。',
     )
   }
 
@@ -687,6 +687,7 @@ function extractArticleFromPage(): PageExtraction {
   const minSelectedTextLength = 40
   const minArticleTextLength = 120
   const maxArticleTextLength = 36_000
+  const structured = readStructuredData()
   const normalize = (value: string) =>
     value
       .replace(/\u00a0/g, ' ')
@@ -696,12 +697,10 @@ function extractArticleFromPage(): PageExtraction {
       .join('\n')
       .slice(0, maxArticleTextLength)
 
-  const title = document.title.trim() || '未命名文章'
+  const metaContent = (selector: string) => document.querySelector(selector)?.getAttribute('content')?.trim() ?? ''
+  const title = document.title.trim() || metaContent('meta[property="og:title"]') || structured.title || '未命名文章'
   const url = window.location.href
-  const author = document
-    .querySelector('meta[name="author"], meta[property="article:author"]')
-    ?.getAttribute('content')
-    ?.trim()
+  const author = metaContent('meta[name="author"], meta[property="article:author"]') || structured.author
   const selectedText = normalize(window.getSelection()?.toString() ?? '')
 
   if (selectedText.length >= minSelectedTextLength) {
@@ -714,30 +713,45 @@ function extractArticleFromPage(): PageExtraction {
     }
   }
 
-  const selectors = ['article', 'main', '[role="main"]', 'body']
-  let candidate: HTMLElement | null = null
-  for (const selector of selectors) {
-    const element = document.querySelector<HTMLElement>(selector)
-    if (element) {
-      candidate = element
-      break
+  const selectors: Array<[string, number]> = [
+    ['[itemprop="articleBody"]', 12_000],
+    ['article', 10_000],
+    ['.article-content, .article-body, .post-content, .entry-content, .article__content, .story-body', 7_000],
+    ['main, [role="main"]', 5_000],
+    ['#article, #content, #main-content, .content', 3_000],
+    ['body', 0],
+  ]
+  const candidates = new Map<HTMLElement, number>()
+  for (const [selector, weight] of selectors) {
+    document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
+      candidates.set(element, Math.max(weight, candidates.get(element) ?? 0))
+    })
+  }
+
+  let bestText = ''
+  let bestScore = Number.NEGATIVE_INFINITY
+  for (const [candidate, weight] of candidates) {
+    const clone = cleanClone(candidate)
+    const text = normalize(clone.innerText)
+    if (!text) continue
+    const paragraphCount = Array.from(clone.querySelectorAll('p'))
+      .filter((paragraph) => normalize(paragraph.innerText).length >= 40)
+      .length
+    const sentenceCount = (text.match(/[。！？.!?]/g) ?? []).length
+    const linkTextLength = Array.from(clone.querySelectorAll('a'))
+      .reduce((total, link) => total + normalize(link.textContent ?? '').length, 0)
+    const linkPenalty = Math.min(text.length, linkTextLength) * 1.4
+    const score = weight + Math.min(text.length, 24_000) + paragraphCount * 160 + sentenceCount * 8 - linkPenalty
+    if (score > bestScore) {
+      bestScore = score
+      bestText = text
     }
   }
 
-  if (!candidate) {
-    return {
-      title,
-      url,
-      text: '',
-      error: { code: 'EXTRACTION_FAILED', message: '没有找到可读取的正文区域。' },
-    }
-  }
-
-  const clone = candidate.cloneNode(true) as HTMLElement
-  clone
-    .querySelectorAll('script, style, noscript, nav, aside, footer, form, header, svg')
-    .forEach((element) => element.remove())
-  const text = normalize(clone.innerText)
+  const structuredText = normalize(structured.articleBody)
+  const text = structuredText.length >= minArticleTextLength && structuredText.length > bestText.length
+    ? structuredText
+    : bestText
 
   if (text.length < minArticleTextLength) {
     return {
@@ -747,7 +761,7 @@ function extractArticleFromPage(): PageExtraction {
       text,
       error: {
         code: 'ARTICLE_TOO_SHORT',
-        message: '自动提取到的正文过短，请在训练页手动粘贴文章。',
+        message: '没有识别到足够长的正文，请先选择正文后重试，或在训练页手动粘贴文章。',
       },
     }
   }
@@ -757,6 +771,51 @@ function extractArticleFromPage(): PageExtraction {
     url,
     ...(author ? { author } : {}),
     text,
+  }
+
+  function cleanClone(element: HTMLElement) {
+    const clone = element.cloneNode(true) as HTMLElement
+    clone.querySelectorAll([
+      'script', 'style', 'noscript', 'nav', 'aside', 'footer', 'form', 'header', 'svg',
+      'iframe', 'canvas', 'video', 'audio', '[aria-hidden="true"]', '[role="navigation"]',
+      '[role="complementary"]', '[role="contentinfo"]',
+      '.ad', '.ads', '.advertisement', '.advert', '.sidebar', '.comments', '.comment',
+      '.related', '.share', '.social', '.newsletter', '.cookie',
+    ].join(',')).forEach((element) => element.remove())
+    return clone
+  }
+
+  function readStructuredData() {
+    let result = { title: '', author: '', articleBody: '' }
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const parsed: unknown = JSON.parse(script.textContent ?? '')
+        const entries = Array.isArray(parsed) ? parsed : [parsed]
+        for (const entry of entries) {
+          if (!isObject(entry)) continue
+          const graph = Array.isArray(entry['@graph']) ? entry['@graph'] : [entry]
+          for (const item of graph) {
+            if (!isObject(item)) continue
+            const articleBody = typeof item.articleBody === 'string' ? item.articleBody : ''
+            const headline = typeof item.headline === 'string' ? item.headline : ''
+            const rawAuthor = item.author
+            const structuredAuthor = typeof rawAuthor === 'string'
+              ? rawAuthor
+              : isObject(rawAuthor) && typeof rawAuthor.name === 'string' ? rawAuthor.name : ''
+            if (articleBody.length > result.articleBody.length) result = { ...result, articleBody }
+            if (!result.title && headline) result = { ...result, title: headline }
+            if (!result.author && structuredAuthor) result = { ...result, author: structuredAuthor }
+          }
+        }
+      } catch {
+        continue
+      }
+    }
+    return result
+  }
+
+  function isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null
   }
 }
 

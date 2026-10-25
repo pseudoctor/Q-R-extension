@@ -85,11 +85,12 @@ type CaptureRecord = {
 ### 4.3 提取规则
 
 1. 若当前选区非空且长度至少 40 字符，使用选区作为正文，并保留页面标题和 URL。
-2. 否则按 `article`、`main`、`[role="main"]`、`body` 顺序选择候选节点。
-3. 删除 `script`、`style`、`noscript`、`nav`、`aside`、`footer`、`form`、`header` 和 `svg`。
-4. 使用 `innerText`，压缩连续空白和空行，截断到 36,000 字符。
-5. 正文少于 120 字符时返回 `ARTICLE_TOO_SHORT`，训练页提供手动粘贴入口。
-6. 对受限页面、浏览器内部页面和 `executeScript` 失败返回 `PAGE_NOT_ACCESSIBLE`，不尝试绕过浏览器权限。
+2. 否则收集 `article`、`[itemprop="articleBody"]`、常见文章容器、`main`、`[role="main"]` 和 `body`，按正文长度、段落数、句子数、链接密度和语义权重选择候选节点。
+3. 删除 `script`、`style`、`noscript`、导航、侧栏、页脚、表单、iframe、媒体、广告、评论、分享和订阅区域。
+4. 优先使用 JSON-LD 的 `articleBody`（当它比 DOM 候选更完整），并从 meta/JSON-LD 补充标题和作者。
+5. 使用 `innerText`，压缩连续空白和空行，截断到 36,000 字符。
+6. 正文少于 120 字符时返回 `ARTICLE_TOO_SHORT`，提示先选择正文或在训练页手动粘贴。
+7. 对受限页面、浏览器内部页面和 `executeScript` 失败返回 `PAGE_NOT_ACCESSIBLE`，不尝试绕过浏览器权限。
 
 ## 5. 分阶段执行计划
 
