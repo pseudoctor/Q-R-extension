@@ -902,62 +902,70 @@ function TrainingPage() {
               <span>{loadError}</span>
             </div>
           )}
-          <section className="editor-card">
-            <div className="editor-meta">
-              <span className="section-kicker">{t('training.sourceMeta')}</span>
-              {capture?.selectedText && <span className="selection-pill">{t('training.selectedText')}</span>}
-            </div>
-            <label>
-              {t('training.title')}
-              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('training.titlePlaceholder')} />
-            </label>
-            <label>
-              {t('training.subtitle')}
-              <input value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder={t('training.subtitlePlaceholder')} maxLength={240} />
-            </label>
-            <label>
-              {t('training.url')}
-              <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" inputMode="url" />
-            </label>
-            <label>
-              {t('training.author')}
-              <input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder={t('training.authorPlaceholder')} />
-            </label>
-            <label>
-              {t('training.source')}
-              <input value={source} onChange={(event) => setSource(event.target.value)} placeholder={t('training.sourcePlaceholder')} maxLength={240} />
-            </label>
-            <label className="prediction-field">
-              <span>{t('training.prediction')}</span>
-              <small>{t('training.predictionHint')}</small>
-              <textarea value={preReadingPrediction} onChange={(event) => setPreReadingPrediction(event.target.value)} placeholder={t('training.predictionPlaceholder')} rows={4} maxLength={2000} />
-            </label>
-            <details className="source-editor" open={sourceEditorOpen} onToggle={(event) => setSourceEditorOpen(event.currentTarget.open)}>
-              <summary>
-                <span>{t('training.sourceEditor')}</span>
-                <small>{t('training.sourceEditorHint')}</small>
-              </summary>
-              <label>
-                {t('training.articleBody')}
-                <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={t('training.articleBodyPlaceholder')} rows={22} maxLength={36_000} />
-              </label>
-            </details>
-            {text.trim() && <ArticlePreview blocks={getArticleBlocks(text, capture && capture.text.trim() === text.trim() ? capture.blocks : undefined)} />}
-            <div className="editor-footer">
-              <span className="character-count">{text.length.toLocaleString()} {t('common.characters')}</span>
-              <div className="editor-actions">
-                <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('markdown')}>Markdown</button>
-                <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('json')}>JSON</button>
-                <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('obsidian')}>Obsidian</button>
-                <button className="secondary-button" type="button" onClick={() => void openPrintPage()}>{t('training.printPdf')}</button>
-                <button className="primary-button" type="button" onClick={() => void saveCurrentArticle()} disabled={saving}>
-                  {saving ? t('training.saving') : t('training.saveStart')}
-                </button>
-              </div>
-            </div>
-            {status && <p className="status-message" role="status">{status}</p>}
-          </section>
-          {capture && 'savedAt' in capture && <TrainingCoach articleId={capture.id} />}
+          <div className={capture && 'savedAt' in capture ? 'training-workspace has-coach' : 'training-workspace'}>
+            <section className="article-column">
+              <section className="editor-card">
+                <div className="editor-meta">
+                  <span className="section-kicker">{t('training.sourceMeta')}</span>
+                  {capture?.selectedText && <span className="selection-pill">{t('training.selectedText')}</span>}
+                </div>
+                <label>
+                  {t('training.title')}
+                  <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('training.titlePlaceholder')} />
+                </label>
+                <label>
+                  {t('training.subtitle')}
+                  <input value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder={t('training.subtitlePlaceholder')} maxLength={240} />
+                </label>
+                <label>
+                  {t('training.url')}
+                  <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" inputMode="url" />
+                </label>
+                <label>
+                  {t('training.author')}
+                  <input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder={t('training.authorPlaceholder')} />
+                </label>
+                <label>
+                  {t('training.source')}
+                  <input value={source} onChange={(event) => setSource(event.target.value)} placeholder={t('training.sourcePlaceholder')} maxLength={240} />
+                </label>
+                <label className="prediction-field">
+                  <span>{t('training.prediction')}</span>
+                  <small>{t('training.predictionHint')}</small>
+                  <textarea value={preReadingPrediction} onChange={(event) => setPreReadingPrediction(event.target.value)} placeholder={t('training.predictionPlaceholder')} rows={4} maxLength={2000} />
+                </label>
+                <details className="source-editor" open={sourceEditorOpen} onToggle={(event) => setSourceEditorOpen(event.currentTarget.open)}>
+                  <summary>
+                    <span>{t('training.sourceEditor')}</span>
+                    <small>{t('training.sourceEditorHint')}</small>
+                  </summary>
+                  <label>
+                    {t('training.articleBody')}
+                    <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={t('training.articleBodyPlaceholder')} rows={22} maxLength={36_000} />
+                  </label>
+                </details>
+                {text.trim() && <ArticlePreview blocks={getArticleBlocks(text, capture && capture.text.trim() === text.trim() ? capture.blocks : undefined)} />}
+                <div className="editor-footer">
+                  <span className="character-count">{text.length.toLocaleString()} {t('common.characters')}</span>
+                  <div className="editor-actions">
+                    <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('markdown')}>Markdown</button>
+                    <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('json')}>JSON</button>
+                    <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('obsidian')}>Obsidian</button>
+                    <button className="secondary-button" type="button" onClick={() => void openPrintPage()}>{t('training.printPdf')}</button>
+                    <button className="primary-button" type="button" onClick={() => void saveCurrentArticle()} disabled={saving}>
+                      {saving ? t('training.saving') : t('training.saveStart')}
+                    </button>
+                  </div>
+                </div>
+                {status && <p className="status-message" role="status">{status}</p>}
+              </section>
+            </section>
+            {capture && 'savedAt' in capture && (
+              <aside className="coach-column">
+                <TrainingCoach articleId={capture.id} />
+              </aside>
+            )}
+          </div>
         </>
       )}
     </main>

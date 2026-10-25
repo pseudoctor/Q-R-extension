@@ -695,6 +695,33 @@
   box-shadow: var(--shadow-soft);
 }
 
+.training-workspace.has-coach {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.95fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.article-column,
+.coach-column {
+  min-width: 0;
+}
+
+.coach-column {
+  align-self: stretch;
+}
+
+.training-workspace.has-coach .coach-card {
+  position: sticky;
+  top: 24px;
+  margin-top: 36px;
+}
+
+.training-workspace.has-coach .article-preview-content {
+  max-height: none;
+  overflow: visible;
+}
+
 .settings-card label {
   display: grid;
   gap: 8px;
@@ -1665,6 +1692,17 @@
 
   .settings-shortcut-row button {
     width: 100%;
+  }
+}
+
+@media (max-width: 960px) {
+  .training-workspace.has-coach {
+    display: block;
+  }
+
+  .training-workspace.has-coach .coach-card {
+    position: static;
+    margin-top: 24px;
   }
 }
 

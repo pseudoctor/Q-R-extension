@@ -175,10 +175,29 @@ function isRestrictedPageError(error: unknown) {
     message.includes('pdf')
 }
 
+async function getActiveWindowId(): Promise<number | undefined> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    return tab?.windowId
+  } catch {
+    return undefined
+  }
+}
+
+async function closeSidePanel(windowId: number | undefined): Promise<void> {
+  if (windowId === undefined || typeof chrome.sidePanel?.close !== 'function') return
+  try {
+    await chrome.sidePanel.close({ windowId })
+  } catch {
+    // Older browsers or an already-closed panel should not block training.
+  }
+}
+
 async function openTrainingPage(
   error?: TrainingPageError,
 ): Promise<ExtensionResponse<{ tabId: number | undefined }>> {
   const state = await getStoredState()
+  const sourceWindowId = await getActiveWindowId()
   const trainingUrl = chrome.runtime.getURL(TRAINING_PAGE)
   const url = error
     ? `${trainingUrl}?errorCode=${encodeURIComponent(error.code)}`
@@ -188,6 +207,7 @@ async function openTrainingPage(
     try {
       const tab = await chrome.tabs.get(state.lastTrainingTabId)
       await chrome.tabs.update(tab.id, { active: true, url })
+      await closeSidePanel(sourceWindowId ?? tab.windowId)
       return success({ tabId: tab.id })
     } catch {
       await chrome.storage.local.remove('lastTrainingTabId')
@@ -199,6 +219,7 @@ async function openTrainingPage(
     if (tab.id !== undefined) {
       await chrome.storage.local.set({ lastTrainingTabId: tab.id })
     }
+    await closeSidePanel(sourceWindowId ?? tab.windowId)
     return success({ tabId: tab.id })
   } catch {
     return createError('EXTRACTION_FAILED', '无法打开插件训练页面。')
