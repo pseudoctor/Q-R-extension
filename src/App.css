@@ -202,6 +202,11 @@
   padding: 22px;
 }
 
+.intro-card > .section-kicker {
+  display: block;
+  margin-bottom: 10px;
+}
+
 .intro-card h2,
 .saved-section h2 {
   margin: 7px 0 8px;

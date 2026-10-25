@@ -285,7 +285,6 @@ function SidePanel() {
 
       <section className="intro-card">
         <span className="section-kicker">{t('side.currentPage')}</span>
-        <h2>{t('side.captureHeading')}</h2>
         <p>{t('side.shortcutHint')}</p>
         <button className="primary-button full-width" type="button" onClick={captureCurrentPage} disabled={loading}>
           {loading ? t('side.capturing') : t('side.capture')}
