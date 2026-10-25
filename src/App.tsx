@@ -5,9 +5,11 @@ import type {
   ExtensionMessage,
   ExtensionResponse,
   SavedArticle,
+  TrainingSession,
 } from './types'
 import { articleToJson } from './export/json'
 import { articleToMarkdown } from './export/markdown'
+import { LESSON_STEPS } from './training/lessons'
 import './App.css'
 
 const extensionAvailable =
@@ -391,9 +393,154 @@ function TrainingPage() {
             </div>
             {status && <p className="status-message" role="status">{status}</p>}
           </section>
+          {capture && 'savedAt' in capture && <TrainingCoach articleId={capture.id} />}
         </>
       )}
     </main>
+  )
+}
+
+function TrainingCoach({ articleId }: { articleId: string }) {
+  const [session, setSession] = useState<TrainingSession | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [readConfirmed, setReadConfirmed] = useState(false)
+  const [answer, setAnswer] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void sendExtensionMessage<TrainingSession | null>({
+        type: 'get-training-session',
+        articleId,
+      }).then((response) => {
+        setLoaded(true)
+        if (response.ok) setSession(response.data)
+        else setError(errorMessage(response.error))
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [articleId])
+
+  const start = async () => {
+    setBusy(true)
+    setError('')
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'start-training-session',
+      articleId,
+    })
+    setBusy(false)
+    if (response.ok) setSession(response.data)
+    else setError(errorMessage(response.error))
+  }
+
+  const submit = async () => {
+    if (answer.trim().length < 5) {
+      setError('请先写下至少 5 个字符的独立回答。')
+      return
+    }
+    setBusy(true)
+    setError('')
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'submit-training-answer',
+      articleId,
+      answer,
+    })
+    setBusy(false)
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return
+    }
+    setSession(response.data)
+    setAnswer('')
+  }
+
+  const reset = async () => {
+    if (!window.confirm('重新开始这篇文章的训练？现有回答会被删除。')) return
+    const response = await sendExtensionMessage<null>({
+      type: 'reset-training-session',
+      articleId,
+    })
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return
+    }
+    setSession(null)
+    setReadConfirmed(false)
+    setAnswer('')
+    setError('')
+  }
+
+  const step = session ? LESSON_STEPS[session.currentStep] : null
+  const completed = session?.currentStep === LESSON_STEPS.length
+
+  return (
+    <section className="coach-card" aria-label="图尔敏阅读训练">
+      <div className="coach-heading">
+        <div>
+          <span className="section-kicker">OFFLINE COACH</span>
+          <h2>八轮独立阅读训练</h2>
+          <p>先自己读和回答；当前版本只保存回答，不伪造 AI 分数。</p>
+        </div>
+        {session && <span className="progress-pill">{Math.min(session.currentStep, LESSON_STEPS.length)} / {LESSON_STEPS.length}</span>}
+      </div>
+
+      {!loaded ? (
+        <p className="loading-state compact-loading">正在加载训练进度…</p>
+      ) : !session ? (
+        <div className="coach-start">
+          <ol className="pre-read-list">
+            <li>先读完标题、正文和段落结构，不看摘要或外部资料。</li>
+            <li>回答只依据当前文章；原文没有交代的地方可以写“未交代”。</li>
+            <li>每轮提交后会保存在本地，刷新页面可以继续。</li>
+          </ol>
+          <label className="read-confirmation">
+            <input type="checkbox" checked={readConfirmed} onChange={(event) => setReadConfirmed(event.target.checked)} />
+            我已独立读完，准备开始第一轮
+          </label>
+          <button className="primary-button" type="button" onClick={() => void start()} disabled={!readConfirmed || busy}>
+            {busy ? '正在开始…' : '开始第一轮'}
+          </button>
+        </div>
+      ) : completed ? (
+        <div className="coach-complete">
+          <span className="complete-mark">✓</span>
+          <div>
+            <h3>八轮训练已完成</h3>
+            <p>你已经留下了完整的阅读思考记录。下一阶段可以接入 AI，对回答做逐轮核验。</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => void reset()}>重新开始</button>
+        </div>
+      ) : step ? (
+        <div className="coach-round">
+          <div className="round-meta">
+            <span>{step.stage} · {step.name}</span>
+            <strong>{step.focus}</strong>
+          </div>
+          <h3>{step.question}</h3>
+          <p className="round-instruction">{step.instruction}</p>
+          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="先写下自己的理解，不必追求一次答对…" rows={8} maxLength={4000} disabled={busy} />
+          <div className="round-footer">
+            <span>{answer.length.toLocaleString()} / 4,000 字符</span>
+            <button className="primary-button" type="button" onClick={() => void submit()} disabled={busy || answer.trim().length < 5}>
+              {busy ? '保存中…' : '保存这一轮'}
+            </button>
+          </div>
+          {session.turns.length > 0 && (
+            <details className="training-history">
+              <summary>查看已完成的 {session.turns.length} 轮</summary>
+              {session.turns.map((turn) => (
+                <div key={`${turn.stepIndex}-${turn.submittedAt}`}>
+                  <strong>第 {turn.stepIndex + 1} 轮</strong>
+                  <p>{turn.answer}</p>
+                </div>
+              ))}
+            </details>
+          )}
+        </div>
+      ) : null}
+      {error && <p className="inline-error" role="alert">{error}</p>}
+    </section>
   )
 }
 

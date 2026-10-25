@@ -13,6 +13,12 @@ import {
   toggleSavedArticleFavorite,
   upsertSavedArticle,
 } from './storage/articles'
+import {
+  getTrainingSession,
+  removeTrainingSession,
+  startTrainingSession,
+  submitTrainingAnswer,
+} from './storage/training'
 
 const TRAINING_PAGE = 'training.html'
 
@@ -45,6 +51,7 @@ async function getStoredState(): Promise<StorageState> {
   return chrome.storage.local.get([
     'pendingCapture',
     'savedArticles',
+    'trainingSessions',
     'lastTrainingTabId',
     'lastPrintTabId',
   ]) as Promise<StorageState>
@@ -206,9 +213,27 @@ async function handleMessage(
     }
     case 'delete-article':
       await removeSavedArticle(message.articleId)
+      await removeTrainingSession(message.articleId)
       return success({ articleId: message.articleId })
     case 'toggle-favorite':
       return success(await toggleSavedArticleFavorite(message.articleId))
+    case 'get-training-session':
+      return success(await getTrainingSession(message.articleId))
+    case 'start-training-session':
+      return success(await startTrainingSession(message.articleId))
+    case 'submit-training-answer':
+      try {
+        const session = await submitTrainingAnswer(message.articleId, message.answer)
+        return session ? success(session) : createError('INVALID_REQUEST', '没有找到这次训练。')
+      } catch (error) {
+        return createError(
+          'INVALID_REQUEST',
+          error instanceof Error ? error.message : '回答保存失败。',
+        )
+      }
+    case 'reset-training-session':
+      await removeTrainingSession(message.articleId)
+      return success(null)
     case 'save-article':
       return saveArticle(message.article)
     default:

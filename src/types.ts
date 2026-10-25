@@ -21,6 +21,27 @@ export type SavedArticleStore = {
   items: SavedArticle[]
 }
 
+export type TrainingTurn = {
+  stepIndex: number
+  question: string
+  answer: string
+  submittedAt: string
+}
+
+export type TrainingSession = {
+  articleId: string
+  currentStep: number
+  turns: TrainingTurn[]
+  startedAt: string
+  updatedAt: string
+  completedAt?: string
+}
+
+export type TrainingSessionStore = {
+  version: 1
+  items: TrainingSession[]
+}
+
 export type ErrorCode =
   | 'NO_ACTIVE_TAB'
   | 'PAGE_NOT_ACCESSIBLE'
@@ -44,6 +65,10 @@ export type ExtensionMessage =
   | { type: 'open-print-article'; articleId: string }
   | { type: 'delete-article'; articleId: string }
   | { type: 'toggle-favorite'; articleId: string }
+  | { type: 'get-training-session'; articleId: string }
+  | { type: 'start-training-session'; articleId: string }
+  | { type: 'submit-training-answer'; articleId: string; answer: string }
+  | { type: 'reset-training-session'; articleId: string }
   | { type: 'save-article'; article: CaptureRecord }
 
 export type ExtensionResponse<T> =
@@ -53,6 +78,7 @@ export type ExtensionResponse<T> =
 export type StorageState = {
   pendingCapture?: CaptureRecord | null
   savedArticles?: SavedArticleStore | SavedArticle[]
+  trainingSessions?: TrainingSessionStore | TrainingSession[]
   lastTrainingTabId?: number
   lastPrintTabId?: number
 }
