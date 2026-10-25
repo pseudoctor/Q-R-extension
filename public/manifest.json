@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "问读 · 浏览器伴读",
+  "version": "0.1.0",
+  "description": "从网页保存文章，并继续进行图尔敏阅读训练。",
+  "action": {
+    "default_title": "打开问读伴读"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "permissions": [
+    "sidePanel",
+    "storage"
+  ]
+}
