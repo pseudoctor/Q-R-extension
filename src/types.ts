@@ -132,6 +132,7 @@ export type ErrorCode =
   | 'AI_CONNECTION_FAILED'
   | 'AI_REQUEST_FAILED'
   | 'AI_INVALID_RESPONSE'
+  | 'SHORTCUTS_PAGE_FAILED'
 
 export type ExtensionError = {
   code: ErrorCode
@@ -143,6 +144,7 @@ export type ExtensionMessage =
   | { type: 'open-training-page' }
   | { type: 'open-manual-paste-page' }
   | { type: 'open-settings' }
+  | { type: 'open-shortcuts' }
   | { type: 'get-locale' }
   | { type: 'save-locale'; locale: Locale }
   | { type: 'get-pending-capture' }

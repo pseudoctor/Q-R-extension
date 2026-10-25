@@ -515,6 +515,11 @@ function SettingsPage() {
     setStatus(t('settings.connected', { provider: response.data.provider, model: response.data.model }))
   }
 
+  const openShortcuts = async () => {
+    const response = await sendExtensionMessage<{ tabId: number | undefined }>({ type: 'open-shortcuts' })
+    if (!response.ok) setStatus(errorMessage(response.error))
+  }
+
   const selectProvider = (providerId: AiSettings['provider']) => {
     const nextProvider = providerById(providerId)
     const nextSettings = { ...settings, provider: providerId, model: nextProvider.defaultModel }
@@ -583,6 +588,15 @@ function SettingsPage() {
             </select>
             <small>{t('settings.languageHint')}</small>
           </label>
+          <div className="settings-shortcut-row">
+            <div>
+              <strong>{t('settings.shortcutsTitle')}</strong>
+              <small>{t('settings.shortcutsHint')}</small>
+            </div>
+            <button className="secondary-button" type="button" onClick={() => void openShortcuts()}>
+              {t('settings.openShortcuts')}
+            </button>
+          </div>
           <label>
             {t('settings.modelService')}
             <select value={settings.provider} onChange={(event) => selectProvider(event.target.value as AiSettings['provider'])}>

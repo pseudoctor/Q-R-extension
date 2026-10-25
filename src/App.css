@@ -734,6 +734,30 @@
   line-height: 1.5;
 }
 
+.settings-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  padding: 14px 0;
+}
+
+.settings-shortcut-row > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-shortcut-row strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.settings-shortcut-row small {
+  display: block;
+}
+
 .settings-actions-row {
   display: flex;
   justify-content: flex-end;
@@ -1626,6 +1650,15 @@
   }
 
   .settings-actions-row button {
+    width: 100%;
+  }
+
+  .settings-shortcut-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-shortcut-row button {
     width: 100%;
   }
 }

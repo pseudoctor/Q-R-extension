@@ -214,6 +214,19 @@ async function openSettingsPage(): Promise<ExtensionResponse<{ tabId: number | u
   }
 }
 
+async function openShortcutsPage(): Promise<ExtensionResponse<{ tabId: number | undefined }>> {
+  const userAgent = globalThis.navigator?.userAgent ?? ''
+  const url = userAgent.includes('Edg/')
+    ? 'edge://extensions/shortcuts'
+    : 'chrome://extensions/shortcuts'
+  try {
+    const tab = await chrome.tabs.create({ url })
+    return success({ tabId: tab.id })
+  } catch {
+    return createError('SHORTCUTS_PAGE_FAILED', '无法打开快捷键设置页面。')
+  }
+}
+
 async function captureAndOpen(
   source: CaptureRecord['source'],
 ): Promise<ExtensionResponse<{ captureId: string }>> {
@@ -687,6 +700,8 @@ async function handleMessage(
       return openTrainingPage()
     case 'open-settings':
       return openSettingsPage()
+    case 'open-shortcuts':
+      return openShortcutsPage()
     case 'get-locale':
       return success(await readLocale())
     case 'save-locale':
