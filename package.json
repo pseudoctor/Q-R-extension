@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint .",
     "preview": "vite preview",
-    "check:article-format": "node --experimental-strip-types scripts/check-article-format.mjs"
+    "check:article-format": "node --experimental-strip-types scripts/check-article-format.mjs",
+    "check:pre-reading": "node --experimental-strip-types scripts/check-pre-reading-prediction.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

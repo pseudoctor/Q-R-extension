@@ -633,6 +633,21 @@
   line-height: 1.7;
 }
 
+.prediction-field {
+  gap: 7px;
+}
+
+.prediction-field small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.prediction-field textarea {
+  min-height: 112px;
+}
+
 .source-editor {
   margin-top: 22px;
   border-top: 1px solid var(--line);

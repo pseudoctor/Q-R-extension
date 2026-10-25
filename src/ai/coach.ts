@@ -18,11 +18,21 @@ export function buildStartPrompt(
   title: string,
   metadata: ArticleMetadata = emptyMetadata(),
   stepIndex = 0,
+  preReadingPrediction = '',
 ) {
   const step = LESSON_STEPS[stepIndex] ?? LESSON_STEPS[0]
+  const prediction = preReadingPrediction.trim()
+  const reflectionInstruction = stepIndex === 0 && prediction
+    ? '用户已经写下了阅读前预测。第一轮必须生成一个围绕“阅读前预测与文章实际主张有哪些重合和偏差”的反思问题，引导用户结合原文自行对照；不要直接说出文章实际主张，不要替用户判断预测是否正确。'
+    : ''
   return {
-    system: `${BASE_PROMPT}\n当前训练步骤是“${step.name}”（${step.focus}）。${step.instruction}\n只返回 JSON，不要 Markdown 代码围栏，格式为 {"question":"一道问题？"}。问题必须只有一个可回答的问题，不暴露文章结论或参考答案。`,
-    user: JSON.stringify({ title, metadata, paragraphs: splitParagraphs(article) }),
+    system: `${BASE_PROMPT}\n当前训练步骤是“${step.name}”（${step.focus}）。${step.instruction}\n${reflectionInstruction}\n只返回 JSON，不要 Markdown 代码围栏，格式为 {"question":"一道问题？"}。问题必须只有一个可回答的问题，不暴露文章结论或参考答案。`,
+    user: JSON.stringify({
+      title,
+      metadata,
+      ...(prediction ? { preReadingPrediction: prediction } : {}),
+      paragraphs: splitParagraphs(article),
+    }),
   }
 }
 
@@ -31,17 +41,23 @@ export function buildGradePrompt(
   title: string,
   metadata: ArticleMetadata = emptyMetadata(),
   session: TrainingSession,
+  preReadingPrediction = '',
 ) {
   const answer = session.draft.trim()
   if (!answer) throw new Error('没有可评分的回答。')
   const completed = session.currentStep >= LESSON_STEPS.length
   const step = LESSON_STEPS[Math.min(LESSON_STEPS.length - 1, session.currentStep)]
   const next = completed ? step : LESSON_STEPS[Math.min(LESSON_STEPS.length - 1, session.currentStep + 1)]
+  const prediction = preReadingPrediction.trim()
+  const reflectionInstruction = session.currentStep === 0 && prediction
+    ? '本轮回答是在回看阅读前预测与文章实际主张的重合和偏差。评分时只依据原文，允许预测合理但不完整或不准确，不因为没有猜中而扣分，重点看回答是否基于原文完成了具体对照。'
+    : ''
   return {
-    system: `${BASE_PROMPT}\n当前步骤是“${step.name}”（${step.focus}）。本轮要求：${step.instruction}\n四个维度各 0–10 整数：fidelity 忠于原文，claim 核心主张提炼，cause 从现象进入原因，structure 论证结构。fidelity 必须给分。本轮重点考察：${step.dimensions.join('、')}；其他维度若本题未测且回答未涉及，使用 score=null，并说明“本题未测”，绝不能因未考察扣分。评分不能因回答写得长或术语多而增加。answerQuote 必须是当前回答的连续原话；sources.quote 必须是所标段落中的连续原文。评语不能使用问句。${completed ? '四阶段已完成，只提出一道针对当前回答薄弱处的可选巩固问题，不总结文章，不写出答案。' : `下一问题应推进“${next.name}”，但只提出一个问题，不写出答案。`}严格只返回 JSON，不要 Markdown 代码围栏。格式参考：${FEEDBACK_SHAPE}`,
+    system: `${BASE_PROMPT}\n当前步骤是“${step.name}”（${step.focus}）。本轮要求：${step.instruction}\n${reflectionInstruction}\n四个维度各 0–10 整数：fidelity 忠于原文，claim 核心主张提炼，cause 从现象进入原因，structure 论证结构。fidelity 必须给分。本轮重点考察：${step.dimensions.join('、')}；其他维度若本题未测且回答未涉及，使用 score=null，并说明“本题未测”，绝不能因未考察扣分。评分不能因回答写得长或术语多而增加。answerQuote 必须是当前回答的连续原话；sources.quote 必须是所标段落中的连续原文。评语不能使用问句。${completed ? '四阶段已完成，只提出一道针对当前回答薄弱处的可选巩固问题，不总结文章，不写出答案。' : `下一问题应推进“${next.name}”，但只提出一个问题，不写出答案。`}严格只返回 JSON，不要 Markdown 代码围栏。格式参考：${FEEDBACK_SHAPE}`,
     user: JSON.stringify({
       title,
       metadata,
+      ...(prediction ? { preReadingPrediction: prediction } : {}),
       paragraphs: splitParagraphs(article).map((text, index) => ({ paragraph: index + 1, text })),
       question: session.currentQuestion,
       answer,

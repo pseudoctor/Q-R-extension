@@ -58,7 +58,7 @@ for (const origin of [
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
-for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'currentStep', 'articleBody', 'blocks', 'advertisement', 'narrated by', 'itemprop=', '浏览器内部页', '/chat/completions', 'AbortController']) {
+for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'currentStep', 'articleBody', 'blocks', 'advertisement', 'narrated by', 'itemprop=', '浏览器内部页', '/chat/completions', 'AbortController', 'preReadingPrediction', '阅读前预测与文章实际主张']) {
   if (!background.includes(marker)) {
     throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
   }
@@ -68,7 +68,7 @@ const appBundle = readdirSync(resolve(dist, 'assets'))
   .filter((file) => file.endsWith('.js'))
   .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
   .join('\n')
-for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new']) {
+for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new', '阅读前预测']) {
   if (!appBundle.includes(marker)) {
     throw new Error(`训练页面缺少核心交互：${marker}`)
   }

@@ -29,6 +29,7 @@ export function articleToMarkdown(article: CaptureRecord | SavedArticle) {
     `subtitle: ${quoteYaml(metadata.subtitle)}`,
     `author: ${quoteYaml(metadata.author)}`,
     `source: ${quoteYaml(metadata.source)}`,
+    `preReadingPrediction: ${quoteYaml(article.preReadingPrediction ?? '')}`,
     `url: ${quoteYaml(article.url)}`,
     `capturedAt: ${quoteYaml(article.capturedAt)}`,
     ...(isSavedArticle(article)
@@ -37,7 +38,8 @@ export function articleToMarkdown(article: CaptureRecord | SavedArticle) {
     '---',
   ].join('\n')
 
-  return `${frontmatter}\n\n# ${title}\n\n${articleBlocksToMarkdown(getArticleBlocks(article.text, article.blocks))}\n`
+  const prediction = article.preReadingPrediction?.trim()
+  return `${frontmatter}\n\n# ${title}\n\n${prediction ? `## 阅读前预测\n\n${escapeMarkdownBlock(prediction)}\n\n` : ''}${articleBlocksToMarkdown(getArticleBlocks(article.text, article.blocks))}\n`
 }
 
 function escapeMarkdownBlock(value: string) {

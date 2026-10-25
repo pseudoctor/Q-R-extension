@@ -70,6 +70,7 @@ export type CaptureRecord = {
   author?: string
   text: string
   blocks?: ArticleBlock[]
+  preReadingPrediction?: string
   selectedText?: string
   capturedAt: string
   source: CaptureSource

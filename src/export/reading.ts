@@ -14,9 +14,10 @@ const DIMENSION_LABELS = {
 export const MAX_OBSIDIAN_URI_LENGTH = 6_000
 
 export type ReadingExportModel = {
-  exportVersion: 2
+  exportVersion: 3
   title: string
   metadata: { subtitle: string; author: string; source: string }
+  preReadingPrediction: string
   url: string
   created: string
   exportedAt: string
@@ -51,13 +52,14 @@ export function buildReadingExportModel(
   const turns = session?.turns ?? []
   const articleBlocks = getArticleBlocks(article.text, article.blocks)
   return {
-    exportVersion: 2,
+    exportVersion: 3,
     title: article.title.trim() || '未命名文章',
     metadata: {
       subtitle: metadata.subtitle.trim(),
       author: metadata.author.trim(),
       source: metadata.source.trim(),
     },
+    preReadingPrediction: article.preReadingPrediction?.trim() ?? '',
     url: article.url.trim(),
     created: article.capturedAt,
     exportedAt: now.toISOString(),
@@ -106,6 +108,7 @@ export function generateReadingMarkdown(model: ReadingExportModel) {
     `subtitle: ${yamlString(model.metadata.subtitle)}`,
     `author: ${yamlString(model.metadata.author)}`,
     `source: ${yamlString(model.metadata.source)}`,
+    `pre_reading_prediction: ${yamlString(model.preReadingPrediction)}`,
     `url: ${yamlString(model.url)}`,
     `created: ${yamlString(model.created)}`,
     `exported_at: ${yamlString(model.exportedAt)}`,
@@ -131,6 +134,7 @@ export function generateReadingMarkdown(model: ReadingExportModel) {
     ...(model.metadata.source ? [`- 来源：${escapeMarkdownBlock(model.metadata.source)}`] : []),
     ...(model.url ? [`- URL：${escapeMarkdownBlock(model.url)}`] : []),
     '',
+    ...(model.preReadingPrediction ? ['## 阅读前预测', '', escapeMarkdownBlock(model.preReadingPrediction), ''] : []),
     '## 原文',
     '',
   ]
@@ -165,7 +169,8 @@ export function generateReadingPdfHtml(model: ReadingExportModel) {
     ? model.turns.map((turn) => `<article class="turn"><h3>第 ${turn.number} 轮 · ${escapeHtml(turn.stage)} · ${escapeHtml(turn.step)}</h3><h4>问题</h4>${htmlParagraphs(turn.question)}<h4>我的回答</h4>${htmlParagraphs(turn.answer)}${feedbackHtml(turn.feedback)}</article>`).join('')
     : '<p>尚未提交训练回答。</p>'
   const subtitle = model.metadata.subtitle ? `<p class="subtitle">${escapeHtml(model.metadata.subtitle)}</p>` : ''
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>${escapeHtml(model.title)} - 问读</title><style>*{box-sizing:border-box}body{margin:0;background:#fffefa;color:#3f4e3b;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC",sans-serif;line-height:1.75}.toolbar{display:flex;justify-content:space-between;max-width:920px;margin:0 auto;padding:20px 28px;border-bottom:1px solid #dfe7d5;color:#809274;font-size:13px}.toolbar button{border:0;border-radius:6px;background:#728c5c;color:#fffefa;padding:9px 14px;font:inherit;cursor:pointer}.report{max-width:920px;margin:0 auto;padding:38px 28px 60px}.report h1,.report h2,.report h3{font-family:Georgia,"Songti SC","Noto Serif SC",serif;font-weight:500;color:#526b47}.report h1{font-size:32px;margin:0 0 4px}.report h2{font-size:22px;margin:36px 0 13px;border-bottom:1px solid #e4eadb;padding-bottom:8px}.report h3{font-size:17px;margin:28px 0 12px}.report h4{font-size:12px;color:#768d66;margin:18px 0 5px}.meta,.subtitle{color:#8a9a7f;font-size:12px}.source{background:#fafbf5;border:1px solid #e1e9d7;padding:20px 22px}.source-paragraph{position:relative;padding-left:34px;margin:0 0 22px;font-family:Georgia,"Songti SC","Noto Serif SC",serif;font-size:15px;line-height:2.05;white-space:pre-wrap}.source-paragraph span{position:absolute;left:0;top:5px;color:#aab79d;font:10px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.turn{border:1px solid #e1e9d7;border-radius:8px;padding:18px 20px;margin:16px 0;break-inside:avoid}.feedback{border-top:1px dashed #d7e2ca;margin-top:18px;padding-top:8px}.dimensions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0;list-style:none}.dimensions li{background:#f1f5ea;border-radius:5px;padding:8px 10px}.dimensions strong{color:#698257}.dimensions span{float:right;color:#7b9368}.dimensions p,.feedback p{margin:3px 0;font-size:12px;color:#64745d}.feedback ul{padding-left:22px}.feedback blockquote{margin:5px 0;padding-left:10px;border-left:2px solid #c7d5b5;color:#65775e}.note{margin-top:24px;color:#a2af98;font-size:11px}@media print{.toolbar{display:none}.report{max-width:none;padding:0}.source,.turn{break-inside:auto}}@media(max-width:700px){.toolbar,.report{padding-left:18px;padding-right:18px}.report h1{font-size:26px}.dimensions{grid-template-columns:1fr}}</style></head><body><div class="toolbar"><span>问读训练记录 · ${model.progress.completed}/${model.progress.total} 轮</span><button type="button" onclick="window.print()">保存为 PDF</button></div><main class="report"><h1>${escapeHtml(model.title)}</h1>${subtitle}<p class="meta">训练状态：${escapeHtml(model.status)} · 平均分：${escapeHtml(model.averageScore === null ? '尚未评分' : `${model.averageScore} / 100`)}</p><h2>原文</h2><section class="source">${paragraphs || '<p>原文为空。</p>'}</section><h2>训练记录</h2>${turns}${model.draft ? `<h2>当前未提交草稿</h2>${htmlParagraphs(model.draft)}` : ''}<p class="note">由问读导出，原文、回答和反馈均来自当前浏览器记录。</p></main><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),120));</script></body></html>`
+  const prediction = model.preReadingPrediction ? `<section class="prediction"><h2>阅读前预测</h2>${htmlParagraphs(model.preReadingPrediction)}</section>` : ''
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>${escapeHtml(model.title)} - 问读</title><style>*{box-sizing:border-box}body{margin:0;background:#fffefa;color:#3f4e3b;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC",sans-serif;line-height:1.75}.toolbar{display:flex;justify-content:space-between;max-width:920px;margin:0 auto;padding:20px 28px;border-bottom:1px solid #dfe7d5;color:#809274;font-size:13px}.toolbar button{border:0;border-radius:6px;background:#728c5c;color:#fffefa;padding:9px 14px;font:inherit;cursor:pointer}.report{max-width:920px;margin:0 auto;padding:38px 28px 60px}.report h1,.report h2,.report h3{font-family:Georgia,"Songti SC","Noto Serif SC",serif;font-weight:500;color:#526b47}.report h1{font-size:32px;margin:0 0 4px}.report h2{font-size:22px;margin:36px 0 13px;border-bottom:1px solid #e4eadb;padding-bottom:8px}.report h3{font-size:17px;margin:28px 0 12px}.report h4{font-size:12px;color:#768d66;margin:18px 0 5px}.meta,.subtitle{color:#8a9a7f;font-size:12px}.prediction{background:#fafbf5;border:1px solid #e1e9d7;padding:18px 22px}.prediction p{margin:0;color:#65775e}.source{background:#fafbf5;border:1px solid #e1e9d7;padding:20px 22px}.source-paragraph{position:relative;padding-left:34px;margin:0 0 22px;font-family:Georgia,"Songti SC","Noto Serif SC",serif;font-size:15px;line-height:2.05;white-space:pre-wrap}.source-paragraph span{position:absolute;left:0;top:5px;color:#aab79d;font:10px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.turn{border:1px solid #e1e9d7;border-radius:8px;padding:18px 20px;margin:16px 0;break-inside:avoid}.feedback{border-top:1px dashed #d7e2ca;margin-top:18px;padding-top:8px}.dimensions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0;list-style:none}.dimensions li{background:#f1f5ea;border-radius:5px;padding:8px 10px}.dimensions strong{color:#698257}.dimensions span{float:right;color:#7b9368}.dimensions p,.feedback p{margin:3px 0;font-size:12px;color:#64745d}.feedback ul{padding-left:22px}.feedback blockquote{margin:5px 0;padding-left:10px;border-left:2px solid #c7d5b5;color:#65775e}.note{margin-top:24px;color:#a2af98;font-size:11px}@media print{.toolbar{display:none}.report{max-width:none;padding:0}.prediction,.source,.turn{break-inside:auto}}@media(max-width:700px){.toolbar,.report{padding-left:18px;padding-right:18px}.report h1{font-size:26px}.dimensions{grid-template-columns:1fr}}</style></head><body><div class="toolbar"><span>问读训练记录 · ${model.progress.completed}/${model.progress.total} 轮</span><button type="button" onclick="window.print()">保存为 PDF</button></div><main class="report"><h1>${escapeHtml(model.title)}</h1>${subtitle}<p class="meta">训练状态：${escapeHtml(model.status)} · 平均分：${escapeHtml(model.averageScore === null ? '尚未评分' : `${model.averageScore} / 100`)}</p>${prediction}<h2>原文</h2><section class="source">${paragraphs || '<p>原文为空。</p>'}</section><h2>训练记录</h2>${turns}${model.draft ? `<h2>当前未提交草稿</h2>${htmlParagraphs(model.draft)}` : ''}<p class="note">由问读导出，原文、回答和反馈均来自当前浏览器记录。</p></main><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),120));</script></body></html>`
 }
 
 export function buildObsidianUrl(markdown: string, options: { vault?: string; path?: string; title?: string } = {}) {

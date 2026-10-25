@@ -561,6 +561,7 @@ function TrainingPage() {
   const [url, setUrl] = useState('')
   const [author, setAuthor] = useState('')
   const [source, setSource] = useState('')
+  const [preReadingPrediction, setPreReadingPrediction] = useState('')
   const [text, setText] = useState('')
   const [sourceEditorOpen, setSourceEditorOpen] = useState(true)
   const [status, setStatus] = useState('')
@@ -591,6 +592,7 @@ function TrainingPage() {
         setUrl('')
         setAuthor('')
         setSource('')
+        setPreReadingPrediction('')
         setText('')
         setSourceEditorOpen(true)
         return
@@ -605,6 +607,7 @@ function TrainingPage() {
       setUrl(response.data.url)
       setAuthor(response.data.metadata?.author ?? response.data.author ?? '')
       setSource(response.data.metadata?.source ?? '')
+      setPreReadingPrediction(response.data.preReadingPrediction ?? '')
       setText(response.data.text)
       setSourceEditorOpen(false)
     }
@@ -636,6 +639,7 @@ function TrainingPage() {
       ...(author.trim() ? { author: author.trim() } : {}),
       text: trimmedText,
       blocks,
+      preReadingPrediction: preReadingPrediction.trim(),
       ...(capture?.selectedText ? { selectedText: capture.selectedText } : {}),
       capturedAt: capture?.capturedAt ?? new Date().toISOString(),
       source: capture?.source ?? 'side-panel',
@@ -670,6 +674,7 @@ function TrainingPage() {
         trimmedText,
         capture && capture.text.trim() === trimmedText ? capture.blocks : undefined,
       ),
+      preReadingPrediction: preReadingPrediction.trim(),
     }
     if (capture && 'savedAt' in capture) {
       return { ...capture, ...fields }
@@ -786,6 +791,11 @@ function TrainingPage() {
             <label>
               来源说明（可选）
               <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="例如：期刊、专栏或书名" maxLength={240} />
+            </label>
+            <label className="prediction-field">
+              <span>阅读前预测（可选）</span>
+              <small>只根据标题、来源和已有信息，猜测文章可能讨论的问题、主张或论证方向。读完后回看。</small>
+              <textarea value={preReadingPrediction} onChange={(event) => setPreReadingPrediction(event.target.value)} placeholder="例如：这篇文章可能解释一个现象背后的原因，以及它对公众判断的影响。" rows={4} maxLength={2000} />
             </label>
             <details className="source-editor" open={sourceEditorOpen} onToggle={(event) => setSourceEditorOpen(event.currentTarget.open)}>
               <summary>
