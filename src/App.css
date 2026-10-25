@@ -184,11 +184,12 @@
 }
 
 .settings-header p {
-  max-width: 52ch;
+  max-width: none;
   margin: 0;
   color: var(--muted);
   font-size: 14px;
   line-height: 1.7;
+  white-space: nowrap;
 }
 
 .eyebrow,
@@ -1570,6 +1571,10 @@
 
   .settings-header {
     display: grid;
+  }
+
+  .settings-header p {
+    white-space: normal;
   }
 
   .editor-card {

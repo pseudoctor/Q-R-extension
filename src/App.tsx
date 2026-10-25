@@ -563,7 +563,7 @@ function SettingsPage() {
     }
     setModelOptions(response.data.models)
     setModelSource(response.data.source)
-    setModelStatus(response.data.warning ?? t('settings.loadedModels', { count: response.data.models.length }))
+    setModelStatus(response.data.warning ?? '')
   }
 
   return (
