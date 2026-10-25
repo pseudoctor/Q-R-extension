@@ -55,7 +55,7 @@ for (const origin of [
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
-for (const marker of ['ai-start', 'ai-grade', '/chat/completions', 'AbortController']) {
+for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'currentStep', '/chat/completions', 'AbortController']) {
   if (!background.includes(marker)) {
     throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
   }
@@ -65,8 +65,13 @@ const appBundle = readdirSync(resolve(dist, 'assets'))
   .filter((file) => file.endsWith('.js'))
   .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
   .join('\n')
-if (!appBundle.includes('AI FEEDBACK') || !appBundle.includes('提交并评分')) {
-  throw new Error('训练页面缺少 AI 评分交互。')
+for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', '文章架', '成长记录', 'obsidian://new']) {
+  if (!appBundle.includes(marker)) {
+    throw new Error(`训练页面缺少核心交互：${marker}`)
+  }
+}
+if (!appBundle.includes('generateReadingMarkdown') && !appBundle.includes('完整 Markdown')) {
+  throw new Error('训练页面缺少完整阅读记录导出。')
 }
 
 for (const asset of ['assets/donate-alipay.jpg', 'assets/donate-paypal.jpg']) {

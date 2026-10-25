@@ -14,14 +14,14 @@ export const AI_PROVIDERS: AiProvider[] = [
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     hostPattern: 'https://api.openai.com/*',
-    defaultModel: 'gpt-4o-mini',
+    defaultModel: 'gpt-5.4-mini',
   },
   {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     hostPattern: 'https://api.deepseek.com/*',
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-flash',
   },
   {
     id: 'gemini',

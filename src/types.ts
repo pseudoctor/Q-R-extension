@@ -2,10 +2,25 @@ export type CaptureSource = 'shortcut' | 'side-panel'
 
 export type AiProviderId = 'openai' | 'deepseek' | 'gemini' | 'qwen' | 'glm' | 'kimi'
 
+export type AiDimensionId = 'fidelity' | 'claim' | 'cause' | 'structure'
+
+export type ArticleMetadata = {
+  subtitle: string
+  author: string
+  source: string
+}
+
 export type AiSettings = {
   provider: AiProviderId
   model: string
   apiKey: string
+}
+
+export type AiModelOption = {
+  id: string
+  label: string
+  created?: number
+  publishedAt?: string
 }
 
 export type AiDimension = {
@@ -42,6 +57,7 @@ export type CaptureRecord = {
   id: string
   title: string
   url: string
+  metadata?: ArticleMetadata
   author?: string
   text: string
   selectedText?: string
@@ -71,6 +87,7 @@ export type TrainingSession = {
   articleId: string
   currentStep: number
   currentQuestion: string
+  draft: string
   turns: TrainingTurn[]
   startedAt: string
   updatedAt: string
@@ -113,13 +130,17 @@ export type ExtensionMessage =
   | { type: 'toggle-favorite'; articleId: string }
   | { type: 'get-training-session'; articleId: string }
   | { type: 'start-training-session'; articleId: string }
+  | { type: 'save-training-draft'; articleId: string; draft: string }
   | { type: 'submit-training-answer'; articleId: string; answer: string }
   | { type: 'reset-training-session'; articleId: string }
   | { type: 'get-ai-settings' }
   | { type: 'save-ai-settings'; settings: AiSettings }
+  | { type: 'list-ai-models'; settings: AiSettings; force?: boolean }
   | { type: 'test-ai-connection'; settings: AiSettings }
   | { type: 'ai-start'; articleId: string }
   | { type: 'ai-grade'; articleId: string }
+  | { type: 'prepare-ai-bridge'; articleId: string }
+  | { type: 'import-ai-feedback'; articleId: string; requestId: string; raw: string }
   | { type: 'save-article'; article: CaptureRecord }
 
 export type ExtensionResponse<T> =

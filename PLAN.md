@@ -1,6 +1,6 @@
 # 问读浏览器插件实施计划
 
-状态：Phase 3B AI 配置、出题和评分完成，等待浏览器手工验收
+状态：Phase 3B AI 训练闭环与原项目功能对齐完成，等待 Chrome/Edge 手工验收
 版本：MVP-1
 目标平台：Chrome / Edge，Manifest V3
 
@@ -15,7 +15,7 @@
 5. 训练页面把标题、URL、正文预填入阅读框，并允许用户编辑后确认保存。
 6. 页面不可访问、正文过短或提取失败时，训练页显示可恢复的错误和手动粘贴入口。
 
-第一阶段不自动调用 AI、不新增网络请求、不写入原 Web 应用数据库、不要求账号登录。
+插件不依赖 Worker；只有用户在设置页明确配置 API key 并授权对应服务域名后，才会直连模型服务。不写入原 Web 应用数据库，不要求账号登录。
 
 ## 2. 已确认约束
 
@@ -57,6 +57,7 @@ type CaptureRecord = {
   id: string
   title: string
   url: string
+  metadata?: { subtitle: string; author: string; source: string }
   author?: string
   text: string
   selectedText?: string
@@ -69,7 +70,7 @@ type CaptureRecord = {
 
 - `pendingCapture`: `CaptureRecord | null`，供训练页读取的一次性待处理文章。
 - `savedArticles`: `{ version: 1, items: SavedArticle[] }`，兼容第一阶段写入的旧数组格式。
-- `trainingSessions`: `{ version: 1, items: TrainingSession[] }`，保存每篇文章的 8 轮离线回答和断点。
+- `trainingSessions`: `{ version: 1, items: TrainingSession[] }`，保存每篇文章的 8 轮回答、AI 反馈、草稿和断点。
 - `lastTrainingTabId`: `number | undefined`，用于尝试聚焦已有训练页；失效后删除并创建新页。
 
 ### 4.2 Service Worker 消息
@@ -134,16 +135,16 @@ type CaptureRecord = {
 
 验收包含重复保存、空标题、超长正文、导出文件名清洗、删除后刷新恢复、旧数据读取和存储配额错误。
 
-### Phase 3A：本地离线图尔敏训练（本次执行）
+### Phase 3A：本地训练状态与图尔敏课程（已实现）
 
-独立交付标准：不接 AI 时仍可完成 8 轮本地手动训练；刷新训练页后可以继续当前轮次；不会伪造 AI 分数。
+独立交付标准：训练会话支持草稿断点、8 轮课程、AI 反馈持久化和完成后的可选巩固；刷新训练页后可以继续当前轮次。
 
 文件和设计：
 
 - 从原项目 `lib/coach.mjs` 提取 8 个课程步骤的静态教学文本，不复制 Next/Cloudflare 运行时。
 - 新增 `TrainingSession` 版本化本地存储，按文章 ID 保存当前轮次、回答、开始时间和完成时间。
 - 训练页提供独立阅读确认、逐轮回答、回答历史、进度和重新开始。
-- 本阶段不发送网络请求，不配置 API key，不展示虚假评分。
+- 未配置 AI 时通过 ChatGPT 桥接完成评分，不伪造 AI 分数；已配置时直连用户选择的 Provider。
 
 验收包含离线训练、刷新恢复、重复提交限制、删除文章同时删除训练记录、八轮完成状态。
 
@@ -196,12 +197,15 @@ type CaptureRecord = {
 - [x] 新增 `src/export/markdown.ts` 和 `src/export/json.ts` 纯函数。
 - [x] Side Panel 增加标题、作者、URL 和正文搜索。
 - [x] Side Panel 增加收藏切换、删除、Markdown、JSON 和 PDF 打印入口。
+- [x] Side Panel 增加文章架/成长记录视图、收藏/进行中/已完成筛选和能力统计。
+- [x] Markdown、JSON、PDF 和 Obsidian 导出包含文章、元数据、训练回答、反馈、进度和草稿。
 - [x] 训练页增加 Markdown、JSON 和打印/PDF 入口。
 - [x] 新增 `print.html`，使用浏览器原生打印流程生成 PDF，不伪造 PDF 文件。
 - [x] 更新 Service Worker 消息协议和打印页标签复用逻辑。
 - [x] 更新扩展静态检查以验证 `print.html` 构建产物。
 - [x] 运行 TypeScript、直接 oxlint、生产构建和扩展静态校验。
 - [ ] 完成浏览器手工验收：迁移旧数组、搜索、收藏、删除、Markdown/JSON 下载和打印保存 PDF。
+- [x] 完成 Obsidian 协议导出，并对超长记录使用剪贴板回退。
 - [ ] 完成浏览器手工验收后提交 Phase 2 commit。
 
 ## 8. Phase 3A TODO
@@ -211,6 +215,8 @@ type CaptureRecord = {
 - [x] 增加读取、开始、提交、重置训练会话的 Service Worker 消息。
 - [x] 保存文章时展示离线训练入口和独立阅读确认。
 - [x] 实现逐轮回答、进度、回答历史、完成状态和重新开始。
+- [x] 保存草稿但只在 AI/桥接反馈成功后提交正式 turn，失败不会推进进度。
+- [x] 完成八轮后支持可选巩固轮次，不改变正式进度。
 - [x] 删除文章时同步删除训练会话。
 - [x] 运行 TypeScript、直接 oxlint、生产构建和扩展静态校验。
 - [ ] 完成浏览器手工验收：刷新恢复、重复提交、八轮完成、删除联动。
@@ -226,8 +232,10 @@ type CaptureRecord = {
 - [x] 在权限拒绝时保持离线训练可用，并显示明确状态。
 - [x] 增加模型连接测试，不在日志或响应中回显 API key。
 - [x] 直接接入 Provider Chat Completions 的出题和评分请求；不依赖 Worker，增加 90 秒超时和结构化错误。
+- [x] 增加服务商模型列表刷新，兼容 Gemini、通义千问分页和 fallback 默认模型。
+- [x] 增加 ChatGPT 桥接请求/导入，使用 requestId 防止反馈错配。
 - [x] 对 AI 返回的 question、feedback、回答引用和原文引用做结构化校验。
-- [x] 训练页面展示 AI 评分、优缺点和原文依据；失败时支持重试或明确跳过评分继续离线训练。
+- [x] 训练页面展示 AI 评分、优缺点和原文依据；失败时保留回答并支持重试或 ChatGPT 桥接。
 - [x] 扩展静态检查覆盖 AI 路由、可选网络权限、评分交互和打赏资源。
 - [ ] 如果未来启用 Worker 代理，在原 Worker 部署环境配置 `EXTENSION_ORIGINS=chrome-extension://<固定扩展ID>`。
 

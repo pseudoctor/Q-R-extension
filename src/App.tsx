@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   CaptureRecord,
   AiSettings,
+  AiModelOption,
   AiFeedback,
   ExtensionError,
   ExtensionMessage,
@@ -10,8 +11,14 @@ import type {
   TrainingSession,
 } from './types'
 import { AI_PROVIDERS, defaultAiSettings, providerById } from './ai/providers'
-import { articleToJson } from './export/json'
-import { articleToMarkdown } from './export/markdown'
+import {
+  buildObsidianUrl,
+  buildReadingExportModel,
+  generateReadingJson,
+  generateReadingMarkdown,
+  generateReadingPdfHtml,
+  sanitizeFilename,
+} from './export/reading'
 import { LESSON_STEPS } from './training/lessons'
 import './App.css'
 
@@ -50,9 +57,12 @@ function App() {
 
 function SidePanel() {
   const [articles, setArticles] = useState<SavedArticle[]>([])
+  const [sessions, setSessions] = useState<Record<string, TrainingSession>>({})
   const [status, setStatus] = useState('准备从当前网页捕获文章。')
   const [loading, setLoading] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
+  const [view, setView] = useState<'library' | 'growth'>('library')
+  const [filter, setFilter] = useState<'all' | 'favorite' | 'in-progress' | 'completed'>('all')
 
   const loadArticles = useCallback(async () => {
     const response = await sendExtensionMessage<SavedArticle[]>({
@@ -62,6 +72,14 @@ function SidePanel() {
       // This is the async result of the storage synchronization effect.
       // oxlint-disable-next-line react(set-state-in-effect)
       setArticles(response.data)
+      const entries = await Promise.all(response.data.map(async (article) => {
+        const sessionResponse = await sendExtensionMessage<TrainingSession | null>({
+          type: 'get-training-session',
+          articleId: article.id,
+        })
+        return sessionResponse.ok && sessionResponse.data ? [article.id, sessionResponse.data] as const : null
+      }))
+      setSessions(Object.fromEntries(entries.filter((entry): entry is readonly [string, TrainingSession] => entry !== null)))
     }
   }, [])
 
@@ -74,13 +92,46 @@ function SidePanel() {
 
   const filteredArticles = useMemo(() => {
     const query = searchTerm.trim().toLocaleLowerCase()
-    if (!query) return articles
-    return articles.filter((article) =>
-      [article.title, article.author, article.url, article.text]
+    return articles.filter((article) => {
+      const session = sessions[article.id]
+      const matchesFilter =
+        filter === 'all' ||
+        (filter === 'favorite' && article.isFavorite) ||
+        (filter === 'in-progress' && Boolean(session && !session.completedAt)) ||
+        (filter === 'completed' && Boolean(session?.completedAt))
+      if (!matchesFilter) return false
+      if (!query) return true
+      return [article.title, article.author, article.metadata?.subtitle, article.metadata?.author, article.metadata?.source, article.url, article.text]
         .filter(Boolean)
-        .some((value) => value?.toLocaleLowerCase().includes(query)),
-    )
-  }, [articles, searchTerm])
+        .some((value) => value?.toLocaleLowerCase().includes(query))
+    })
+  }, [articles, filter, searchTerm, sessions])
+
+  const growthStats = useMemo(() => {
+    const allTurns = Object.values(sessions).flatMap((session) => session.turns)
+    const scoredTurns = allTurns.filter((turn) => turn.feedback)
+    const dimensionTotals = scoredTurns.reduce<Record<string, { total: number; count: number }>>((totals, turn) => {
+      if (!turn.feedback) return totals
+      for (const [dimension, result] of Object.entries(turn.feedback.dimensions)) {
+        if (typeof result.score !== 'number') continue
+        const current = totals[dimension] ?? { total: 0, count: 0 }
+        totals[dimension] = { total: current.total + result.score, count: current.count + 1 }
+      }
+      return totals
+    }, {})
+    return {
+      articleCount: articles.length,
+      completedCount: Object.values(sessions).filter((session) => Boolean(session.completedAt)).length,
+      turnCount: allTurns.length,
+      average: scoredTurns.length === 0
+        ? null
+        : scoredTurns.reduce((sum, turn) => sum + (turn.feedback?.total ?? 0), 0) / scoredTurns.length,
+      dimensions: ['fidelity', 'claim', 'cause', 'structure'].map((dimension) => {
+        const value = dimensionTotals[dimension]
+        return { dimension, average: value && value.count > 0 ? value.total / value.count : null }
+      }),
+    }
+  }, [articles.length, sessions])
 
   const captureCurrentPage = async () => {
     setLoading(true)
@@ -138,11 +189,31 @@ function SidePanel() {
     setStatus(errorMessage(response.error))
   }
 
-  const exportArticle = (article: SavedArticle, format: 'markdown' | 'json') => {
-    const content = format === 'markdown' ? articleToMarkdown(article) : articleToJson(article)
+  const exportArticle = async (article: SavedArticle, format: 'markdown' | 'json' | 'obsidian') => {
+    const model = buildReadingExportModel(article, sessions[article.id])
+    if (format === 'obsidian') {
+      const markdown = generateReadingMarkdown(model)
+      const obsidian = buildObsidianUrl(markdown, { title: article.title })
+      if (obsidian.useClipboard) {
+        if (!navigator.clipboard?.writeText) {
+          setStatus('内容较长且浏览器不支持剪贴板，请改用 Markdown 导出。')
+          return
+        }
+        try {
+          await navigator.clipboard.writeText(markdown)
+        } catch {
+          setStatus('无法写入剪贴板，请改用 Markdown 导出。')
+          return
+        }
+      }
+      window.open(obsidian.url, '_blank', 'noopener,noreferrer')
+      setStatus(obsidian.useClipboard ? '内容已复制，Obsidian 将从剪贴板创建笔记。' : '已请求 Obsidian 创建完整训练记录。')
+      return
+    }
+    const content = format === 'markdown' ? generateReadingMarkdown(model) : generateReadingJson(model)
     const extension = format === 'markdown' ? 'md' : 'json'
-    downloadText(content, `${safeFilename(article.title)}.${extension}`, format === 'markdown' ? 'text/markdown' : 'application/json')
-    setStatus(`已导出 ${format === 'markdown' ? 'Markdown' : 'JSON'}。`)
+    downloadText(content, sanitizeFilename(article.title, extension), format === 'markdown' ? 'text/markdown' : 'application/json')
+    setStatus(`已导出完整 ${format === 'markdown' ? 'Markdown' : 'JSON'} 记录。`)
   }
 
   const printArticle = async (articleId: string) => {
@@ -183,50 +254,92 @@ function SidePanel() {
         <div className="section-heading">
           <div>
             <span className="section-kicker">LOCAL LIBRARY</span>
-            <h2>最近保存</h2>
+            <h2>{view === 'library' ? '文章架' : '成长记录'}</h2>
           </div>
-          <button className="icon-button" type="button" onClick={() => void loadArticles()} aria-label="刷新文章列表">
-            ↻
-          </button>
+          <div className="section-heading-actions">
+            <button className={view === 'library' ? 'text-button active' : 'text-button'} type="button" onClick={() => setView('library')}>文章架</button>
+            <button className={view === 'growth' ? 'text-button active' : 'text-button'} type="button" onClick={() => setView('growth')}>成长记录</button>
+            <button className="icon-button" type="button" onClick={() => void loadArticles()} aria-label="刷新文章列表">↻</button>
+          </div>
         </div>
-        <input
-          className="search-input"
-          value={searchTerm}
-          onChange={(event) => setSearchTerm(event.target.value)}
-          placeholder="搜索标题、作者或正文…"
-          aria-label="搜索本地文章"
-        />
-        {articles.length === 0 ? (
-          <div className="empty-state">
-            <span className="empty-mark">○</span>
-            <p>保存后的文章会出现在这里。</p>
-          </div>
-        ) : filteredArticles.length === 0 ? (
-          <div className="empty-state compact-empty">
-            <p>没有匹配的文章。</p>
-          </div>
+        {view === 'library' ? (
+          <>
+            <input
+              className="search-input"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="搜索标题、作者或正文…"
+              aria-label="搜索本地文章"
+            />
+            <div className="library-filters" role="group" aria-label="文章筛选">
+              {([
+                ['all', '全部'],
+                ['favorite', '收藏'],
+                ['in-progress', '进行中'],
+                ['completed', '已完成'],
+              ] as const).map(([value, label]) => (
+                <button key={value} className={filter === value ? 'filter-button active' : 'filter-button'} type="button" onClick={() => setFilter(value)}>{label}</button>
+              ))}
+            </div>
+            {articles.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-mark">○</span>
+                <p>保存后的文章会出现在这里。</p>
+              </div>
+            ) : filteredArticles.length === 0 ? (
+              <div className="empty-state compact-empty">
+                <p>没有匹配的文章。</p>
+              </div>
+            ) : (
+              <ul className="article-list">
+                {filteredArticles.slice(0, 8).map((article) => {
+                  const session = sessions[article.id]
+                  const progress = session ? `${Math.min(session.currentStep, LESSON_STEPS.length)}/${LESSON_STEPS.length}` : '未开始'
+                  const average = session?.turns.length
+                    ? session.turns.reduce((sum, turn) => sum + (turn.feedback?.total ?? 0), 0) / session.turns.length
+                    : null
+                  return (
+                    <li key={article.id}>
+                      <div className="article-list-item">
+                        <button className="article-open-button" type="button" onClick={() => void openSavedArticle(article.id)}>
+                          <strong>{article.isFavorite ? '★ ' : ''}{article.title}</strong>
+                          <span>{formatDate(article.savedAt)} · {article.text.length.toLocaleString()} 字符 · 训练 {progress}{average === null ? '' : ` · ${average.toFixed(1)} 分`}</span>
+                        </button>
+                        <div className="article-actions">
+                          <button type="button" onClick={() => void toggleFavorite(article.id)} aria-label={article.isFavorite ? '取消收藏' : '收藏'}>{article.isFavorite ? '★' : '☆'}</button>
+                          <button type="button" onClick={() => void exportArticle(article, 'markdown')} aria-label="导出完整 Markdown">MD</button>
+                          <button type="button" onClick={() => void exportArticle(article, 'json')} aria-label="导出完整 JSON">JSON</button>
+                          <button type="button" onClick={() => void exportArticle(article, 'obsidian')} aria-label="导出到 Obsidian">OB</button>
+                          <button type="button" onClick={() => void printArticle(article.id)} aria-label="打印或保存为 PDF">PDF</button>
+                          <button type="button" onClick={() => void deleteArticle(article.id)} aria-label="删除文章">×</button>
+                        </div>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </>
         ) : (
-          <ul className="article-list">
-            {filteredArticles.slice(0, 8).map((article) => (
-              <li key={article.id}>
-                <div className="article-list-item">
-                  <button className="article-open-button" type="button" onClick={() => void openSavedArticle(article.id)}>
-                    <strong>{article.isFavorite ? '★ ' : ''}{article.title}</strong>
-                    <span>{formatDate(article.savedAt)} · {article.text.length.toLocaleString()} 字符</span>
-                  </button>
-                  <div className="article-actions">
-                    <button type="button" onClick={() => void toggleFavorite(article.id)} aria-label={article.isFavorite ? '取消收藏' : '收藏'}>
-                      {article.isFavorite ? '★' : '☆'}
-                    </button>
-                    <button type="button" onClick={() => exportArticle(article, 'markdown')} aria-label="导出 Markdown">MD</button>
-                    <button type="button" onClick={() => exportArticle(article, 'json')} aria-label="导出 JSON">JSON</button>
-                    <button type="button" onClick={() => void printArticle(article.id)} aria-label="打印或保存为 PDF">PDF</button>
-                    <button type="button" onClick={() => void deleteArticle(article.id)} aria-label="删除文章">×</button>
-                  </div>
+          <div className="growth-panel">
+            <div className="growth-stats">
+              <div><strong>{growthStats.articleCount}</strong><span>保存文章</span></div>
+              <div><strong>{growthStats.completedCount}</strong><span>完成训练</span></div>
+              <div><strong>{growthStats.turnCount}</strong><span>评分回合</span></div>
+              <div><strong>{growthStats.average === null ? '—' : growthStats.average.toFixed(1)}</strong><span>平均得分</span></div>
+            </div>
+            <div className="growth-dimensions">
+              <h3>四项能力</h3>
+              {growthStats.dimensions.map(({ dimension, average }) => (
+                <div className="dimension-row" key={dimension}>
+                  <span>{dimension === 'fidelity' ? '忠实度' : dimension === 'claim' ? '主张' : dimension === 'cause' ? '因果' : '结构'}</span>
+                  <div className="dimension-track"><i style={{ width: `${Math.min(100, ((average ?? 0) / 10) * 100)}%` }} /></div>
+                  <strong>{average === null ? '—' : average.toFixed(1)}</strong>
                 </div>
-              </li>
-            ))}
-          </ul>
+              ))}
+            </div>
+            <p className="muted-copy">每次 AI 评分都会沉淀到本地成长记录，文章和训练答案不会上传到插件之外的存储。</p>
+          </div>
         )}
       </section>
 
@@ -237,9 +350,11 @@ function SidePanel() {
 
 function SettingsPage() {
   const [settings, setSettings] = useState<AiSettings>(defaultAiSettings())
+  const [modelOptions, setModelOptions] = useState<AiModelOption[]>([])
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [modelsLoading, setModelsLoading] = useState(false)
   const [status, setStatus] = useState('')
   const [permissionStatus, setPermissionStatus] = useState('')
 
@@ -302,8 +417,31 @@ function SettingsPage() {
   const selectProvider = (providerId: AiSettings['provider']) => {
     const nextProvider = providerById(providerId)
     setSettings((current) => ({ ...current, provider: providerId, model: nextProvider.defaultModel }))
+    setModelOptions([])
     setPermissionStatus('')
     setStatus('')
+  }
+
+  const refreshModels = async () => {
+    setModelsLoading(true)
+    setStatus('')
+    const granted = await ensurePermission()
+    if (!granted) {
+      setModelsLoading(false)
+      return
+    }
+    const response = await sendExtensionMessage<{ models: AiModelOption[]; source: 'provider' | 'fallback'; warning?: string }>({
+      type: 'list-ai-models',
+      settings,
+      force: true,
+    })
+    setModelsLoading(false)
+    if (!response.ok) {
+      setStatus(errorMessage(response.error))
+      return
+    }
+    setModelOptions(response.data.models)
+    setStatus(response.data.warning ?? `已获取 ${response.data.models.length} 个可用模型。`)
   }
 
   return (
@@ -334,7 +472,14 @@ function SettingsPage() {
           </label>
           <label>
             模型名称
-            <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} />
+            <div className="model-input-row">
+              <input list="ai-model-options" value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} />
+              <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels()} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? '获取中…' : '刷新模型'}</button>
+            </div>
+            <datalist id="ai-model-options">
+              {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </datalist>
+            <small>{modelOptions.length ? `已加载 ${modelOptions.length} 个服务商模型，也可以手动输入兼容模型名。` : '可刷新服务商模型列表，也可以手动输入兼容模型名。'}</small>
           </label>
           <label>
             API key
@@ -378,8 +523,10 @@ function SettingsPage() {
 function TrainingPage() {
   const [capture, setCapture] = useState<CaptureRecord | SavedArticle | null>(null)
   const [title, setTitle] = useState('')
+  const [subtitle, setSubtitle] = useState('')
   const [url, setUrl] = useState('')
   const [author, setAuthor] = useState('')
+  const [source, setSource] = useState('')
   const [text, setText] = useState('')
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
@@ -407,8 +554,10 @@ function TrainingPage() {
       }
       setCapture(response.data)
       setTitle(response.data.title)
+      setSubtitle(response.data.metadata?.subtitle ?? '')
       setUrl(response.data.url)
-      setAuthor(response.data.author ?? '')
+      setAuthor(response.data.metadata?.author ?? response.data.author ?? '')
+      setSource(response.data.metadata?.source ?? '')
       setText(response.data.text)
     }
 
@@ -417,8 +566,8 @@ function TrainingPage() {
 
   const saveCurrentArticle = async () => {
     const trimmedText = text.trim()
-    if (trimmedText.length < 20) {
-      setStatus('正文至少需要 20 个字符，或先从网页重新获取文章。')
+    if (trimmedText.length < 120 || trimmedText.length > 36_000) {
+      setStatus('正文需要 120–36,000 个字符，或先从网页重新获取文章。')
       return
     }
 
@@ -426,6 +575,11 @@ function TrainingPage() {
     const article: CaptureRecord = {
       id: capture?.id ?? crypto.randomUUID(),
       title: title.trim() || '未命名文章',
+      metadata: {
+        subtitle: subtitle.trim(),
+        author: author.trim(),
+        source: source.trim(),
+      },
       url: url.trim(),
       ...(author.trim() ? { author: author.trim() } : {}),
       text: trimmedText,
@@ -450,6 +604,11 @@ function TrainingPage() {
   const currentArticle = (): CaptureRecord | SavedArticle => {
     const fields = {
       title: title.trim() || '未命名文章',
+      metadata: {
+        subtitle: subtitle.trim(),
+        author: author.trim(),
+        source: source.trim(),
+      },
       url: url.trim(),
       ...(author.trim() ? { author: author.trim() } : {}),
       text: text.trim(),
@@ -466,12 +625,50 @@ function TrainingPage() {
     }
   }
 
-  const exportCurrentArticle = (format: 'markdown' | 'json') => {
+  const exportCurrentArticle = async (format: 'markdown' | 'json' | 'obsidian') => {
     const article = currentArticle()
-    const content = format === 'markdown' ? articleToMarkdown(article) : articleToJson(article)
-    const extension = format === 'markdown' ? 'md' : 'json'
-    downloadText(content, `${safeFilename(article.title)}.${extension}`, format === 'markdown' ? 'text/markdown' : 'application/json')
-    setStatus(`已导出 ${format === 'markdown' ? 'Markdown' : 'JSON'}。`)
+    let session: TrainingSession | null = null
+    if ('savedAt' in article) {
+      const response = await sendExtensionMessage<TrainingSession | null>({
+        type: 'get-training-session',
+        articleId: article.id,
+      })
+      if (!response.ok) {
+        setStatus(errorMessage(response.error))
+        return
+      }
+      session = response.data
+    }
+    const model = buildReadingExportModel(article, session)
+    if (format === 'markdown') {
+      downloadText(generateReadingMarkdown(model), sanitizeFilename(article.title, 'md'), 'text/markdown')
+      setStatus('已导出完整 Markdown 训练记录。')
+      return
+    }
+    if (format === 'json') {
+      downloadText(generateReadingJson(model), sanitizeFilename(article.title, 'json'), 'application/json')
+      setStatus('已导出完整 JSON 训练记录。')
+      return
+    }
+    const markdown = generateReadingMarkdown(model)
+    const obsidian = buildObsidianUrl(markdown, { title: article.title })
+    if (obsidian.useClipboard) {
+      if (!navigator.clipboard?.writeText) {
+        setStatus('内容较长且浏览器不支持剪贴板，请改用 Markdown 导出。')
+        return
+      }
+      try {
+        await navigator.clipboard.writeText(markdown)
+      } catch {
+        setStatus('无法写入剪贴板，请改用 Markdown 导出。')
+        return
+      }
+      window.open(obsidian.url, '_blank', 'noopener,noreferrer')
+      setStatus('内容已复制，Obsidian 将从剪贴板创建笔记。')
+      return
+    }
+    window.open(obsidian.url, '_blank', 'noopener,noreferrer')
+    setStatus('已请求 Obsidian 创建完整训练记录。')
   }
 
   const openPrintPage = async () => {
@@ -517,6 +714,10 @@ function TrainingPage() {
               <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="文章标题" />
             </label>
             <label>
+              副标题（可选）
+              <input value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder="没有就留空" maxLength={240} />
+            </label>
+            <label>
               来源 URL
               <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" inputMode="url" />
             </label>
@@ -525,14 +726,19 @@ function TrainingPage() {
               <input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="作者名" />
             </label>
             <label>
+              来源说明（可选）
+              <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="例如：期刊、专栏或书名" maxLength={240} />
+            </label>
+            <label>
               正文
-              <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="把文章正文粘贴到这里…" rows={22} />
+              <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="把文章正文粘贴到这里…" rows={22} maxLength={36_000} />
             </label>
             <div className="editor-footer">
               <span className="character-count">{text.length.toLocaleString()} 字符</span>
               <div className="editor-actions">
-                <button className="secondary-button" type="button" onClick={() => exportCurrentArticle('markdown')}>Markdown</button>
-                <button className="secondary-button" type="button" onClick={() => exportCurrentArticle('json')}>JSON</button>
+                <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('markdown')}>Markdown</button>
+                <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('json')}>JSON</button>
+                <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('obsidian')}>Obsidian</button>
                 <button className="secondary-button" type="button" onClick={() => void openPrintPage()}>打印 / PDF</button>
                 <button className="primary-button" type="button" onClick={() => void saveCurrentArticle()} disabled={saving}>
                   {saving ? '保存中…' : '保存并开始训练'}
@@ -554,9 +760,12 @@ function TrainingCoach({ articleId }: { articleId: string }) {
   const [loaded, setLoaded] = useState(false)
   const [aiLoaded, setAiLoaded] = useState(false)
   const [readConfirmed, setReadConfirmed] = useState(false)
+  const [reinforcing, setReinforcing] = useState(false)
   const [answer, setAnswer] = useState('')
   const [busy, setBusy] = useState(false)
-  const [offlineContinuation, setOfflineContinuation] = useState(false)
+  const [bridge, setBridge] = useState<{ requestId: string; prompt: string } | null>(null)
+  const [bridgeReply, setBridgeReply] = useState('')
+  const [bridgeError, setBridgeError] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -570,13 +779,28 @@ function TrainingCoach({ articleId }: { articleId: string }) {
       ]).then(([sessionResponse, settingsResponse]) => {
         setLoaded(true)
         setAiLoaded(true)
-        if (sessionResponse.ok) setSession(sessionResponse.data)
+        if (sessionResponse.ok) {
+          setSession(sessionResponse.data)
+          setAnswer(sessionResponse.data?.draft ?? '')
+        }
         else setError(errorMessage(sessionResponse.error))
         if (settingsResponse.ok) setAiSettings(settingsResponse.data)
       })
     }, 0)
     return () => window.clearTimeout(timer)
   }, [articleId])
+
+  useEffect(() => {
+    if (!loaded || !session) return
+    const timer = window.setTimeout(() => {
+      void sendExtensionMessage<TrainingSession>({
+        type: 'save-training-draft',
+        articleId,
+        draft: answer,
+      })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [answer, articleId, loaded, session])
 
   const aiConfigured = aiLoaded && Boolean(aiSettings?.apiKey.trim())
 
@@ -607,6 +831,18 @@ function TrainingCoach({ articleId }: { articleId: string }) {
     else setError(errorMessage(aiResponse.error))
   }
 
+  const retryAiStart = async () => {
+    setBusy(true)
+    setError('')
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'ai-start',
+      articleId,
+    })
+    setBusy(false)
+    if (response.ok) setSession(response.data)
+    else setError(errorMessage(response.error))
+  }
+
   const submit = async () => {
     if (answer.trim().length < 5) {
       setError('请先写下至少 5 个字符的独立回答。')
@@ -614,22 +850,31 @@ function TrainingCoach({ articleId }: { articleId: string }) {
     }
     setBusy(true)
     setError('')
-    const response = await sendExtensionMessage<TrainingSession>({
-      type: 'submit-training-answer',
+    const draftResponse = await sendExtensionMessage<TrainingSession>({
+      type: 'save-training-draft',
       articleId,
-      answer,
+      draft: answer,
     })
-    if (!response.ok) {
+    if (!draftResponse.ok) {
       setBusy(false)
-      setError(errorMessage(response.error))
+      setError(errorMessage(draftResponse.error))
       return
     }
-    setSession(response.data)
-    setAnswer('')
-    setOfflineContinuation(false)
+    setSession(draftResponse.data)
 
     if (!aiConfigured) {
+      const bridgeResponse = await sendExtensionMessage<{ requestId: string; prompt: string }>({
+        type: 'prepare-ai-bridge',
+        articleId,
+      })
       setBusy(false)
+      if (bridgeResponse.ok) {
+        setBridge(bridgeResponse.data)
+        setBridgeReply('')
+        setBridgeError('')
+      } else {
+        setError(errorMessage(bridgeResponse.error))
+      }
       return
     }
     const aiResponse = await sendExtensionMessage<TrainingSession>({
@@ -637,24 +882,44 @@ function TrainingCoach({ articleId }: { articleId: string }) {
       articleId,
     })
     setBusy(false)
-    if (aiResponse.ok) setSession(aiResponse.data)
-    else setError(errorMessage(aiResponse.error))
+    if (aiResponse.ok) {
+      setSession(aiResponse.data)
+      setAnswer(aiResponse.data.draft)
+      setReinforcing(false)
+    } else setError(errorMessage(aiResponse.error))
   }
 
-  const retryGrade = async () => {
+  const copyBridgePrompt = async () => {
+    if (!bridge) return
+    try {
+      await navigator.clipboard.writeText(bridge.prompt)
+      setBridgeError('评分请求已复制，可以粘贴到 ChatGPT。')
+    } catch {
+      setBridgeError('浏览器不允许自动复制，请展开请求文本后手动复制。')
+    }
+  }
+
+  const importBridgeFeedback = async () => {
+    if (!bridge || !bridgeReply.trim()) return
     setBusy(true)
-    setError('')
+    setBridgeError('')
     const response = await sendExtensionMessage<TrainingSession>({
-      type: 'ai-grade',
+      type: 'import-ai-feedback',
       articleId,
+      requestId: bridge.requestId,
+      raw: bridgeReply,
     })
     setBusy(false)
-    if (response.ok) {
-      setSession(response.data)
-      setOfflineContinuation(false)
-    } else {
-      setError(errorMessage(response.error))
+    if (!response.ok) {
+      setBridgeError(errorMessage(response.error))
+      return
     }
+    setSession(response.data)
+    setAnswer(response.data.draft)
+    setReinforcing(false)
+    setBridge(null)
+    setBridgeReply('')
+    setBridgeError('')
   }
 
   const reset = async () => {
@@ -669,15 +934,17 @@ function TrainingCoach({ articleId }: { articleId: string }) {
     }
     setSession(null)
     setReadConfirmed(false)
+    setReinforcing(false)
     setAnswer('')
-    setOfflineContinuation(false)
+    setBridge(null)
+    setBridgeReply('')
+    setBridgeError('')
     setError('')
   }
 
-  const step = session ? LESSON_STEPS[session.currentStep] : null
+  const step = session ? LESSON_STEPS[Math.min(session.currentStep, LESSON_STEPS.length - 1)] : null
   const latestTurn = session?.turns.at(-1)
-  const aiPending = Boolean(aiConfigured && latestTurn && !latestTurn.feedback && !offlineContinuation)
-  const completed = session?.currentStep === LESSON_STEPS.length && !aiPending
+  const completed = session?.currentStep === LESSON_STEPS.length
 
   return (
     <section className="coach-card" aria-label="图尔敏阅读训练">
@@ -708,20 +975,7 @@ function TrainingCoach({ articleId }: { articleId: string }) {
           </button>
           {!aiConfigured && <button className="text-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })}>去设置 AI</button>}
         </div>
-      ) : aiPending && latestTurn ? (
-        <div className="ai-pending-card">
-          <span className="section-kicker">AI REVIEW PENDING</span>
-          <h3>回答已保存，等待 AI 评分</h3>
-          <p>这轮回答不会丢失。评分成功后，下一轮问题才会解锁；如果服务暂时不可用，可以稍后重试。</p>
-          <blockquote>{latestTurn.answer}</blockquote>
-          <div className="round-footer">
-            <button className="primary-button" type="button" onClick={() => void retryGrade()} disabled={busy}>
-              {busy ? '评分中…' : '重试 AI 评分'}
-            </button>
-            <button className="text-button" type="button" onClick={() => setOfflineContinuation(true)} disabled={busy}>跳过评分，继续离线训练</button>
-          </div>
-        </div>
-      ) : completed ? (
+      ) : completed && !reinforcing ? (
         <>
           <div className="coach-complete">
             <span className="complete-mark">✓</span>
@@ -730,25 +984,30 @@ function TrainingCoach({ articleId }: { articleId: string }) {
               <p>你已经留下了完整的阅读思考记录。每轮回答和 AI 反馈都保存在本地。</p>
             </div>
             <button className="secondary-button" type="button" onClick={() => void reset()}>重新开始</button>
+            <button className="secondary-button" type="button" onClick={() => { setReinforcing(true); setAnswer(''); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>再巩固一轮</button>
           </div>
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
         </>
       ) : step ? (
         <div className="coach-round">
           <div className="round-meta">
-            <span>{step.stage} · {step.name}</span>
+            <span>{reinforcing ? '巩固复盘' : `${step.stage} · ${step.name}`}</span>
             <strong>{step.focus}</strong>
           </div>
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
           <h3>{session.currentQuestion || step.question}</h3>
           <p className="round-instruction">{step.instruction}</p>
-          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="先写下自己的理解，不必追求一次答对…" rows={8} maxLength={4000} disabled={busy || aiPending} />
+          {aiConfigured && session.turns.length === 0 && session.currentStep === 0 && session.currentQuestion === LESSON_STEPS[0].question && (
+            <button className="text-button retry-button" type="button" onClick={() => void retryAiStart()} disabled={busy}>重新请求 AI 首轮问题</button>
+          )}
+          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="先写下自己的理解，不必追求一次答对…" rows={8} maxLength={4000} disabled={busy || Boolean(bridge)} />
           <div className="round-footer">
             <span>{answer.length.toLocaleString()} / 4,000 字符</span>
-            <button className="primary-button" type="button" onClick={() => void submit()} disabled={busy || aiPending || answer.trim().length < 5}>
-              {busy ? aiConfigured ? 'AI 评分中…' : '保存中…' : aiConfigured ? '提交并评分' : '保存这一轮'}
+            <button className="primary-button" type="button" onClick={() => void submit()} disabled={busy || Boolean(bridge) || answer.trim().length < 5}>
+              {busy ? aiConfigured ? 'AI 评分中…' : '保存中…' : aiConfigured ? '提交并评分' : '生成评分请求'}
             </button>
           </div>
+          {bridge && <BridgeCard bridge={bridge} reply={bridgeReply} error={bridgeError} busy={busy} onCopy={() => void copyBridgePrompt()} onOpenChat={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')} onReply={setBridgeReply} onImport={() => void importBridgeFeedback()} />}
           {session.turns.length > 0 && (
             <details className="training-history">
               <summary>查看已完成的 {session.turns.length} 轮</summary>
@@ -806,13 +1065,47 @@ function FeedbackCard({ feedback }: { feedback: AiFeedback }) {
   )
 }
 
+type BridgeCardProps = {
+  bridge: { requestId: string; prompt: string }
+  reply: string
+  error: string
+  busy: boolean
+  onCopy: () => void
+  onOpenChat: () => void
+  onReply: (value: string) => void
+  onImport: () => void
+}
+
+function BridgeCard({ bridge, reply, error, busy, onCopy, onOpenChat, onReply, onImport }: BridgeCardProps) {
+  return (
+    <div className="bridge-card">
+      <span className="section-kicker">CHATGPT ASSISTED REVIEW</span>
+      <h4>回答已保存，完成一次辅助评分</h4>
+      <p>将评分请求复制到 ChatGPT，只粘贴完整 JSON 反馈回来。导入前会重新核验 requestId、分数、回答引用和原文依据。</p>
+      <div className="bridge-actions">
+        <button className="secondary-button" type="button" onClick={onCopy}>复制评分请求</button>
+        <button className="text-button" type="button" onClick={onOpenChat}>打开 ChatGPT</button>
+      </div>
+      <details className="bridge-prompt">
+        <summary>查看评分请求</summary>
+        <textarea aria-label="评分请求" readOnly value={bridge.prompt} rows={8} />
+      </details>
+      <textarea aria-label="评分反馈 JSON" value={reply} onChange={(event) => onReply(event.target.value)} placeholder={'粘贴 ChatGPT 返回的 JSON，例如：{"requestId":"…","feedback":{…}}'} rows={6} maxLength={30_000} disabled={busy} />
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <button className="primary-button" type="button" onClick={onImport} disabled={busy || !reply.trim()}>
+        {busy ? '校验中…' : '校验并导入反馈'}
+      </button>
+    </div>
+  )
+}
+
 function PrintPage() {
-  const [article, setArticle] = useState<CaptureRecord | SavedArticle | null>(null)
+  const [html, setHtml] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
     const loadArticle = async () => {
-      const response = await sendExtensionMessage<CaptureRecord | null>({
+      const response = await sendExtensionMessage<CaptureRecord | SavedArticle | null>({
         type: 'get-pending-capture',
       })
       if (!response.ok) {
@@ -823,7 +1116,19 @@ function PrintPage() {
         setError('没有找到待打印的文章。')
         return
       }
-      setArticle(response.data)
+      let session: TrainingSession | null = null
+      if ('savedAt' in response.data) {
+        const sessionResponse = await sendExtensionMessage<TrainingSession | null>({
+          type: 'get-training-session',
+          articleId: response.data.id,
+        })
+        if (!sessionResponse.ok) {
+          setError(errorMessage(sessionResponse.error))
+          return
+        }
+        session = sessionResponse.data
+      }
+      setHtml(generateReadingPdfHtml(buildReadingExportModel(response.data, session)))
     }
     void loadArticle()
   }, [])
@@ -831,32 +1136,11 @@ function PrintPage() {
   if (error) {
     return <main className="print-shell"><div className="notice error-notice">{error}</div></main>
   }
-  if (!article) {
+  if (!html) {
     return <main className="print-shell"><div className="loading-state">正在加载打印内容…</div></main>
   }
 
-  return (
-    <main className="print-shell">
-      <div className="print-toolbar no-print">
-        <span>问读 · 打印阅读稿</span>
-        <button className="primary-button" type="button" onClick={() => window.print()}>打印 / 保存为 PDF</button>
-      </div>
-      <article className="print-article">
-        <span className="eyebrow">TOULMIN READER</span>
-        <h1>{article.title}</h1>
-        <div className="print-meta">
-          {article.author && <span>{article.author}</span>}
-          {safeHttpUrl(article.url) && <a href={safeHttpUrl(article.url)}>{article.url}</a>}
-          <time dateTime={article.capturedAt}>{formatDateTime(article.capturedAt)}</time>
-        </div>
-        <div className="print-content">
-          {article.text.split('\n').map((paragraph, index) => (
-            <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>
-          ))}
-        </div>
-      </article>
-    </main>
-  )
+  return <main className="print-shell"><iframe className="print-frame" title="问读完整训练记录" srcDoc={html} /></main>
 }
 
 function formatDate(value: string) {
@@ -864,29 +1148,6 @@ function formatDate(value: string) {
     month: 'short',
     day: 'numeric',
   }).format(new Date(value))
-}
-
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
-}
-
-function safeFilename(value: string) {
-  return (value.trim() || '未命名文章')
-    .replace(/[\\/:*?"<>|]/g, '-')
-    .replace(/\s+/g, ' ')
-    .slice(0, 80)
-}
-
-function safeHttpUrl(value: string) {
-  try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : ''
-  } catch {
-    return ''
-  }
 }
 
 function downloadText(content: string, filename: string, mimeType: string) {

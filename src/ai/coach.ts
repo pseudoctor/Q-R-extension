@@ -1,4 +1,4 @@
-import type { AiFeedback, TrainingSession } from '../types'
+import type { AiFeedback, ArticleMetadata, TrainingSession } from '../types'
 import { LESSON_STEPS } from '../training/lessons'
 
 const DIMENSION_KEYS = ['fidelity', 'claim', 'cause', 'structure'] as const
@@ -13,26 +13,38 @@ const FEEDBACK_SHAPE = `{
   "nextQuestion": "只有一个问题？"
 }`
 
-export function buildStartPrompt(article: string, title: string, stepIndex = 0) {
+export function buildStartPrompt(
+  article: string,
+  title: string,
+  metadata: ArticleMetadata = emptyMetadata(),
+  stepIndex = 0,
+) {
   const step = LESSON_STEPS[stepIndex] ?? LESSON_STEPS[0]
   return {
     system: `${BASE_PROMPT}\n当前训练步骤是“${step.name}”（${step.focus}）。${step.instruction}\n只返回 JSON，不要 Markdown 代码围栏，格式为 {"question":"一道问题？"}。问题必须只有一个可回答的问题，不暴露文章结论或参考答案。`,
-    user: JSON.stringify({ title, paragraphs: splitParagraphs(article) }),
+    user: JSON.stringify({ title, metadata, paragraphs: splitParagraphs(article) }),
   }
 }
 
-export function buildGradePrompt(article: string, title: string, session: TrainingSession) {
-  const turn = session.turns.at(-1)
-  if (!turn) throw new Error('没有可评分的回答。')
-  const step = LESSON_STEPS[turn.stepIndex] ?? LESSON_STEPS[0]
-  const next = LESSON_STEPS[Math.min(LESSON_STEPS.length - 1, turn.stepIndex + 1)]
+export function buildGradePrompt(
+  article: string,
+  title: string,
+  metadata: ArticleMetadata = emptyMetadata(),
+  session: TrainingSession,
+) {
+  const answer = session.draft.trim()
+  if (!answer) throw new Error('没有可评分的回答。')
+  const completed = session.currentStep >= LESSON_STEPS.length
+  const step = LESSON_STEPS[Math.min(LESSON_STEPS.length - 1, session.currentStep)]
+  const next = completed ? step : LESSON_STEPS[Math.min(LESSON_STEPS.length - 1, session.currentStep + 1)]
   return {
-    system: `${BASE_PROMPT}\n当前步骤是“${step.name}”（${step.focus}）。本轮要求：${step.instruction}\n四个维度各 0–10 整数：fidelity 忠于原文，claim 核心主张提炼，cause 从现象进入原因，structure 论证结构。fidelity 必须给分；本题未涉及的维度使用 score=null，并说明“本题未测”。评分不能因回答写得长或术语多而增加。answerQuote 必须是当前回答的连续原话；sources.quote 必须是所标段落中的连续原文。评语不能使用问句。下一问题应推进“${next.name}”，但只提出一个问题，不写出答案。严格只返回 JSON，不要 Markdown 代码围栏。格式参考：${FEEDBACK_SHAPE}`,
+    system: `${BASE_PROMPT}\n当前步骤是“${step.name}”（${step.focus}）。本轮要求：${step.instruction}\n四个维度各 0–10 整数：fidelity 忠于原文，claim 核心主张提炼，cause 从现象进入原因，structure 论证结构。fidelity 必须给分。本轮重点考察：${step.dimensions.join('、')}；其他维度若本题未测且回答未涉及，使用 score=null，并说明“本题未测”，绝不能因未考察扣分。评分不能因回答写得长或术语多而增加。answerQuote 必须是当前回答的连续原话；sources.quote 必须是所标段落中的连续原文。评语不能使用问句。${completed ? '四阶段已完成，只提出一道针对当前回答薄弱处的可选巩固问题，不总结文章，不写出答案。' : `下一问题应推进“${next.name}”，但只提出一个问题，不写出答案。`}严格只返回 JSON，不要 Markdown 代码围栏。格式参考：${FEEDBACK_SHAPE}`,
     user: JSON.stringify({
       title,
+      metadata,
       paragraphs: splitParagraphs(article).map((text, index) => ({ paragraph: index + 1, text })),
-      question: turn.question,
-      answer: turn.answer,
+      question: session.currentQuestion,
+      answer,
       history: session.turns.slice(-10).map(({ question, answer, stepIndex }) => ({ question, answer, stepIndex })),
     }),
   }
@@ -124,6 +136,10 @@ function validateSources(value: unknown, paragraphs: string[]) {
 
 function splitParagraphs(article: string) {
   return article.split(/\n\s*\n|\n/).map((text) => text.trim()).filter(Boolean)
+}
+
+function emptyMetadata(): ArticleMetadata {
+  return { subtitle: '', author: '', source: '' }
 }
 
 function totalScore(dimensions: AiFeedback['dimensions']) {

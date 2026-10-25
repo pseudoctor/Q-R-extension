@@ -2,12 +2,18 @@ import type { CaptureRecord, SavedArticle } from '../types'
 
 export function articleToMarkdown(article: CaptureRecord | SavedArticle) {
   const title = article.title.trim() || '未命名文章'
-  const author = article.author?.trim()
+  const metadata = article.metadata ?? {
+    subtitle: '',
+    author: article.author?.trim() ?? '',
+    source: '',
+  }
   const frontmatter = [
     '---',
     `title: ${quoteYaml(title)}`,
-    `source: ${quoteYaml(article.url)}`,
-    ...(author ? [`author: ${quoteYaml(author)}`] : []),
+    `subtitle: ${quoteYaml(metadata.subtitle)}`,
+    `author: ${quoteYaml(metadata.author)}`,
+    `source: ${quoteYaml(metadata.source)}`,
+    `url: ${quoteYaml(article.url)}`,
     `capturedAt: ${quoteYaml(article.capturedAt)}`,
     ...(isSavedArticle(article)
       ? [`savedAt: ${quoteYaml(article.savedAt)}`, `favorite: ${article.isFavorite}`]

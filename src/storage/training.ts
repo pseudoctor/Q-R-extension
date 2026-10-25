@@ -41,6 +41,7 @@ export async function startTrainingSession(articleId: string) {
     articleId,
     currentStep: 0,
     currentQuestion: LESSON_STEPS[0].question,
+    draft: '',
     turns: [],
     startedAt: now,
     updatedAt: now,
@@ -49,33 +50,25 @@ export async function startTrainingSession(articleId: string) {
   return session
 }
 
-export async function submitTrainingAnswer(articleId: string, answer: string) {
+export async function saveTrainingDraft(articleId: string, answer: string) {
   const session = await getTrainingSession(articleId)
   if (!session) return null
-  const trimmedAnswer = answer.trim()
-  if (trimmedAnswer.length < 5 || trimmedAnswer.length > 4_000) {
-    throw new Error('回答需要 5–4,000 个字符。')
+  if (answer.length > 4_000) {
+    throw new Error('回答需要不超过 4,000 个字符。')
   }
 
-  const now = new Date().toISOString()
-  const turn = {
-    stepIndex: session.currentStep,
-    question: session.currentQuestion,
-    answer: trimmedAnswer,
-    submittedAt: now,
-  }
-  const nextStep = Math.min(8, session.currentStep + 1)
-  const updated: TrainingSession = {
+  const updated = {
     ...session,
-    currentStep: nextStep,
-    currentQuestion: LESSON_STEPS[nextStep]?.question ?? '',
-    turns: [...session.turns, turn],
-    updatedAt: now,
-    ...(nextStep === 8 ? { completedAt: now } : {}),
+    draft: answer,
+    updatedAt: new Date().toISOString(),
   }
   const sessions = await readTrainingSessions()
   await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
   return updated
+}
+
+export async function submitTrainingAnswer(articleId: string, answer: string) {
+  return saveTrainingDraft(articleId, answer)
 }
 
 export async function setTrainingQuestion(articleId: string, question: string) {
@@ -91,17 +84,49 @@ export async function setTrainingQuestion(articleId: string, question: string) {
   return updated
 }
 
-export async function attachTrainingFeedback(articleId: string, feedback: AiFeedback) {
+export async function commitTrainingFeedback(articleId: string, feedback: AiFeedback) {
   const session = await getTrainingSession(articleId)
-  if (!session || !session.turns.length) return null
-  const turns = session.turns.map((turn, index) =>
-    index === session.turns.length - 1 ? { ...turn, feedback } : turn,
-  )
+  if (!session) return null
+  const legacyTurn = session.turns.at(-1)
+  const hasLegacyPendingTurn = Boolean(legacyTurn && !legacyTurn.feedback && !session.draft.trim())
+  if (session.currentStep >= LESSON_STEPS.length && !hasLegacyPendingTurn && !session.draft.trim()) return null
+
+  if (hasLegacyPendingTurn && legacyTurn) {
+    const turns = session.turns.map((turn, index) =>
+      index === session.turns.length - 1 ? { ...turn, feedback } : turn,
+    )
+    const updated = {
+      ...session,
+      turns,
+      currentQuestion: feedback.nextQuestion,
+      draft: '',
+      updatedAt: new Date().toISOString(),
+    }
+    const sessions = await readTrainingSessions()
+    await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
+    return updated
+  }
+
+  const answer = session.draft.trim()
+  if (answer.length < 5 || answer.length > 4_000) return null
+  const now = new Date().toISOString()
+  const reinforcement = session.currentStep >= LESSON_STEPS.length
+  const turn = {
+    stepIndex: reinforcement ? LESSON_STEPS.length - 1 : session.currentStep,
+    question: session.currentQuestion,
+    answer,
+    submittedAt: now,
+    feedback,
+  }
+  const nextStep = reinforcement ? session.currentStep : Math.min(LESSON_STEPS.length, session.currentStep + 1)
   const updated = {
     ...session,
-    turns,
+    currentStep: nextStep,
     currentQuestion: feedback.nextQuestion,
-    updatedAt: new Date().toISOString(),
+    draft: '',
+    turns: [...session.turns, turn],
+    updatedAt: now,
+    ...(nextStep === LESSON_STEPS.length ? { completedAt: now } : { completedAt: undefined }),
   }
   const sessions = await readTrainingSessions()
   await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
@@ -127,6 +152,7 @@ function isTrainingSession(value: unknown): value is TrainingSession {
     currentStep >= 0 &&
     currentStep <= 8 &&
     (typeof value.currentQuestion === 'string' || value.currentQuestion === undefined) &&
+    (typeof value.draft === 'string' || value.draft === undefined) &&
     Array.isArray(value.turns) &&
     typeof value.startedAt === 'string' &&
     typeof value.updatedAt === 'string'
@@ -137,6 +163,7 @@ function withQuestionDefault(session: TrainingSession): TrainingSession {
   return {
     ...session,
     currentQuestion: session.currentQuestion || LESSON_STEPS[session.currentStep]?.question || '',
+    draft: session.draft || '',
   }
 }
 
