@@ -246,7 +246,6 @@ function SidePanel() {
     <main className="app-shell side-panel-shell">
       <header className="brand-header">
         <div>
-          <span className="eyebrow">TOULMIN READER</span>
           <h1>{t('common.productName')}</h1>
         </div>
         <div className="header-actions">
