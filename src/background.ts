@@ -7,6 +7,12 @@ import type {
   SavedArticle,
   StorageState,
 } from './types'
+import {
+  readSavedArticles,
+  removeSavedArticle,
+  toggleSavedArticleFavorite,
+  upsertSavedArticle,
+} from './storage/articles'
 
 const TRAINING_PAGE = 'training.html'
 
@@ -40,6 +46,7 @@ async function getStoredState(): Promise<StorageState> {
     'pendingCapture',
     'savedArticles',
     'lastTrainingTabId',
+    'lastPrintTabId',
   ]) as Promise<StorageState>
 }
 
@@ -147,18 +154,16 @@ async function saveArticle(
   }
 
   try {
-    const state = await getStoredState()
+    const previous = await readSavedArticles()
+    const existing = previous.find((item) => item.id === article.id)
     const savedArticle: SavedArticle = {
       ...article,
       title: article.title.trim() || '未命名文章',
       text,
+      isFavorite: existing?.isFavorite ?? false,
       savedAt: new Date().toISOString(),
     }
-    const previous = Array.isArray(state.savedArticles) ? state.savedArticles : []
-    const withoutDuplicate = previous.filter((item) => item.id !== savedArticle.id)
-    await chrome.storage.local.set({
-      savedArticles: [savedArticle, ...withoutDuplicate].slice(0, 50),
-    })
+    await upsertSavedArticle(savedArticle)
     return success(savedArticle)
   } catch {
     return createError('STORAGE_FAILED', '文章保存失败，请稍后重试。')
@@ -181,22 +186,58 @@ async function handleMessage(
       await chrome.storage.local.set({ pendingCapture: null })
       return success(null)
     case 'get-saved-articles': {
-      const state = await getStoredState()
-      return success(Array.isArray(state.savedArticles) ? state.savedArticles : [])
+      return success(await readSavedArticles())
     }
     case 'open-saved-article': {
-      const state = await getStoredState()
-      const article = state.savedArticles?.find((item) => item.id === message.articleId)
+      const article = (await readSavedArticles()).find((item) => item.id === message.articleId)
       if (!article) {
         return createError('INVALID_REQUEST', '没有找到这篇本地文章。')
       }
       await chrome.storage.local.set({ pendingCapture: article })
       return openTrainingPage()
     }
+    case 'open-print-article': {
+      const article = (await readSavedArticles()).find((item) => item.id === message.articleId)
+      if (!article) {
+        return createError('INVALID_REQUEST', '没有找到这篇本地文章。')
+      }
+      await chrome.storage.local.set({ pendingCapture: article })
+      return openPrintPage()
+    }
+    case 'delete-article':
+      await removeSavedArticle(message.articleId)
+      return success({ articleId: message.articleId })
+    case 'toggle-favorite':
+      return success(await toggleSavedArticleFavorite(message.articleId))
     case 'save-article':
       return saveArticle(message.article)
     default:
       return createError('INVALID_REQUEST', '无法识别插件请求。')
+  }
+}
+
+async function openPrintPage(): Promise<ExtensionResponse<{ tabId: number | undefined }>> {
+  const state = await getStoredState()
+  const printUrl = chrome.runtime.getURL('print.html')
+
+  if (state.lastPrintTabId !== undefined) {
+    try {
+      const tab = await chrome.tabs.get(state.lastPrintTabId)
+      await chrome.tabs.update(tab.id, { active: true, url: printUrl })
+      return success({ tabId: tab.id })
+    } catch {
+      await chrome.storage.local.remove('lastPrintTabId')
+    }
+  }
+
+  try {
+    const tab = await chrome.tabs.create({ url: printUrl })
+    if (tab.id !== undefined) {
+      await chrome.storage.local.set({ lastPrintTabId: tab.id })
+    }
+    return success({ tabId: tab.id })
+  } catch {
+    return createError('EXTRACTION_FAILED', '无法打开打印页面。')
   }
 }
 

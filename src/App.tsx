@@ -6,6 +6,8 @@ import type {
   ExtensionResponse,
   SavedArticle,
 } from './types'
+import { articleToJson } from './export/json'
+import { articleToMarkdown } from './export/markdown'
 import './App.css'
 
 const extensionAvailable =
@@ -33,7 +35,9 @@ function errorMessage(error: ExtensionError) {
 
 function App() {
   const isTrainingPage = window.location.pathname.endsWith('training.html')
+  const isPrintPage = window.location.pathname.endsWith('print.html')
 
+  if (isPrintPage) return <PrintPage />
   return isTrainingPage ? <TrainingPage /> : <SidePanel />
 }
 
@@ -41,19 +45,35 @@ function SidePanel() {
   const [articles, setArticles] = useState<SavedArticle[]>([])
   const [status, setStatus] = useState('准备从当前网页捕获文章。')
   const [loading, setLoading] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
 
   const loadArticles = useCallback(async () => {
     const response = await sendExtensionMessage<SavedArticle[]>({
       type: 'get-saved-articles',
     })
     if (response.ok) {
+      // This is the async result of the storage synchronization effect.
+      // oxlint-disable-next-line react(set-state-in-effect)
       setArticles(response.data)
     }
   }, [])
 
   useEffect(() => {
-    void loadArticles()
+    const timer = window.setTimeout(() => {
+      void loadArticles()
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [loadArticles])
+
+  const filteredArticles = useMemo(() => {
+    const query = searchTerm.trim().toLocaleLowerCase()
+    if (!query) return articles
+    return articles.filter((article) =>
+      [article.title, article.author, article.url, article.text]
+        .filter(Boolean)
+        .some((value) => value?.toLocaleLowerCase().includes(query)),
+    )
+  }, [articles, searchTerm])
 
   const captureCurrentPage = async () => {
     setLoading(true)
@@ -83,6 +103,47 @@ function SidePanel() {
       articleId,
     })
     setStatus(response.ok ? '已打开本地文章。' : errorMessage(response.error))
+  }
+
+  const deleteArticle = async (articleId: string) => {
+    if (!window.confirm('删除这篇本地文章？此操作无法撤销。')) return
+    const response = await sendExtensionMessage<{ articleId: string }>({
+      type: 'delete-article',
+      articleId,
+    })
+    if (response.ok) {
+      setStatus('文章已删除。')
+      await loadArticles()
+      return
+    }
+    setStatus(errorMessage(response.error))
+  }
+
+  const toggleFavorite = async (articleId: string) => {
+    const response = await sendExtensionMessage<SavedArticle | null>({
+      type: 'toggle-favorite',
+      articleId,
+    })
+    if (response.ok) {
+      await loadArticles()
+      return
+    }
+    setStatus(errorMessage(response.error))
+  }
+
+  const exportArticle = (article: SavedArticle, format: 'markdown' | 'json') => {
+    const content = format === 'markdown' ? articleToMarkdown(article) : articleToJson(article)
+    const extension = format === 'markdown' ? 'md' : 'json'
+    downloadText(content, `${safeFilename(article.title)}.${extension}`, format === 'markdown' ? 'text/markdown' : 'application/json')
+    setStatus(`已导出 ${format === 'markdown' ? 'Markdown' : 'JSON'}。`)
+  }
+
+  const printArticle = async (articleId: string) => {
+    const response = await sendExtensionMessage<{ tabId: number | undefined }>({
+      type: 'open-print-article',
+      articleId,
+    })
+    setStatus(response.ok ? '已打开打印页，可选择“保存为 PDF”。' : errorMessage(response.error))
   }
 
   return (
@@ -118,19 +179,41 @@ function SidePanel() {
             ↻
           </button>
         </div>
+        <input
+          className="search-input"
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="搜索标题、作者或正文…"
+          aria-label="搜索本地文章"
+        />
         {articles.length === 0 ? (
           <div className="empty-state">
             <span className="empty-mark">○</span>
             <p>保存后的文章会出现在这里。</p>
           </div>
+        ) : filteredArticles.length === 0 ? (
+          <div className="empty-state compact-empty">
+            <p>没有匹配的文章。</p>
+          </div>
         ) : (
           <ul className="article-list">
-            {articles.slice(0, 8).map((article) => (
+            {filteredArticles.slice(0, 8).map((article) => (
               <li key={article.id}>
-                <button className="article-list-item" type="button" onClick={() => void openSavedArticle(article.id)}>
-                  <strong>{article.title}</strong>
-                  <span>{formatDate(article.savedAt)}</span>
-                </button>
+                <div className="article-list-item">
+                  <button className="article-open-button" type="button" onClick={() => void openSavedArticle(article.id)}>
+                    <strong>{article.isFavorite ? '★ ' : ''}{article.title}</strong>
+                    <span>{formatDate(article.savedAt)} · {article.text.length.toLocaleString()} 字符</span>
+                  </button>
+                  <div className="article-actions">
+                    <button type="button" onClick={() => void toggleFavorite(article.id)} aria-label={article.isFavorite ? '取消收藏' : '收藏'}>
+                      {article.isFavorite ? '★' : '☆'}
+                    </button>
+                    <button type="button" onClick={() => exportArticle(article, 'markdown')} aria-label="导出 Markdown">MD</button>
+                    <button type="button" onClick={() => exportArticle(article, 'json')} aria-label="导出 JSON">JSON</button>
+                    <button type="button" onClick={() => void printArticle(article.id)} aria-label="打印或保存为 PDF">PDF</button>
+                    <button type="button" onClick={() => void deleteArticle(article.id)} aria-label="删除文章">×</button>
+                  </div>
+                </div>
               </li>
             ))}
           </ul>
@@ -143,7 +226,7 @@ function SidePanel() {
 }
 
 function TrainingPage() {
-  const [capture, setCapture] = useState<CaptureRecord | null>(null)
+  const [capture, setCapture] = useState<CaptureRecord | SavedArticle | null>(null)
   const [title, setTitle] = useState('')
   const [url, setUrl] = useState('')
   const [author, setAuthor] = useState('')
@@ -214,6 +297,45 @@ function TrainingPage() {
     setStatus('已保存到本地文章架。你可以继续编辑，或返回插件面板打开其他文章。')
   }
 
+  const currentArticle = (): CaptureRecord | SavedArticle => {
+    const fields = {
+      title: title.trim() || '未命名文章',
+      url: url.trim(),
+      ...(author.trim() ? { author: author.trim() } : {}),
+      text: text.trim(),
+    }
+    if (capture && 'savedAt' in capture) {
+      return { ...capture, ...fields }
+    }
+    return {
+      id: capture?.id ?? crypto.randomUUID(),
+      ...fields,
+      ...(capture?.selectedText ? { selectedText: capture.selectedText } : {}),
+      capturedAt: capture?.capturedAt ?? new Date().toISOString(),
+      source: capture?.source ?? 'side-panel',
+    }
+  }
+
+  const exportCurrentArticle = (format: 'markdown' | 'json') => {
+    const article = currentArticle()
+    const content = format === 'markdown' ? articleToMarkdown(article) : articleToJson(article)
+    const extension = format === 'markdown' ? 'md' : 'json'
+    downloadText(content, `${safeFilename(article.title)}.${extension}`, format === 'markdown' ? 'text/markdown' : 'application/json')
+    setStatus(`已导出 ${format === 'markdown' ? 'Markdown' : 'JSON'}。`)
+  }
+
+  const openPrintPage = async () => {
+    if (!capture || !('savedAt' in capture)) {
+      setStatus('请先保存文章，再打开打印页。')
+      return
+    }
+    const response = await sendExtensionMessage<{ tabId: number | undefined }>({
+      type: 'open-print-article',
+      articleId: capture.id,
+    })
+    setStatus(response.ok ? '已打开打印页，可选择“保存为 PDF”。' : errorMessage(response.error))
+  }
+
   return (
     <main className="app-shell training-shell">
       <header className="training-header">
@@ -258,9 +380,14 @@ function TrainingPage() {
             </label>
             <div className="editor-footer">
               <span className="character-count">{text.length.toLocaleString()} 字符</span>
-              <button className="primary-button" type="button" onClick={() => void saveCurrentArticle()} disabled={saving}>
-                {saving ? '保存中…' : '保存并开始训练'}
-              </button>
+              <div className="editor-actions">
+                <button className="secondary-button" type="button" onClick={() => exportCurrentArticle('markdown')}>Markdown</button>
+                <button className="secondary-button" type="button" onClick={() => exportCurrentArticle('json')}>JSON</button>
+                <button className="secondary-button" type="button" onClick={() => void openPrintPage()}>打印 / PDF</button>
+                <button className="primary-button" type="button" onClick={() => void saveCurrentArticle()} disabled={saving}>
+                  {saving ? '保存中…' : '保存并开始训练'}
+                </button>
+              </div>
             </div>
             {status && <p className="status-message" role="status">{status}</p>}
           </section>
@@ -270,11 +397,97 @@ function TrainingPage() {
   )
 }
 
+function PrintPage() {
+  const [article, setArticle] = useState<CaptureRecord | SavedArticle | null>(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const loadArticle = async () => {
+      const response = await sendExtensionMessage<CaptureRecord | null>({
+        type: 'get-pending-capture',
+      })
+      if (!response.ok) {
+        setError(errorMessage(response.error))
+        return
+      }
+      if (!response.data) {
+        setError('没有找到待打印的文章。')
+        return
+      }
+      setArticle(response.data)
+    }
+    void loadArticle()
+  }, [])
+
+  if (error) {
+    return <main className="print-shell"><div className="notice error-notice">{error}</div></main>
+  }
+  if (!article) {
+    return <main className="print-shell"><div className="loading-state">正在加载打印内容…</div></main>
+  }
+
+  return (
+    <main className="print-shell">
+      <div className="print-toolbar no-print">
+        <span>问读 · 打印阅读稿</span>
+        <button className="primary-button" type="button" onClick={() => window.print()}>打印 / 保存为 PDF</button>
+      </div>
+      <article className="print-article">
+        <span className="eyebrow">TOULMIN READER</span>
+        <h1>{article.title}</h1>
+        <div className="print-meta">
+          {article.author && <span>{article.author}</span>}
+          {safeHttpUrl(article.url) && <a href={safeHttpUrl(article.url)}>{article.url}</a>}
+          <time dateTime={article.capturedAt}>{formatDateTime(article.capturedAt)}</time>
+        </div>
+        <div className="print-content">
+          {article.text.split('\n').map((paragraph, index) => (
+            <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>
+          ))}
+        </div>
+      </article>
+    </main>
+  )
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     month: 'short',
     day: 'numeric',
   }).format(new Date(value))
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value))
+}
+
+function safeFilename(value: string) {
+  return (value.trim() || '未命名文章')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80)
+}
+
+function safeHttpUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
+function downloadText(content: string, filename: string, mimeType: string) {
+  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` })
+  const href = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = href
+  anchor.download = filename
+  anchor.click()
+  window.setTimeout(() => URL.revokeObjectURL(href), 0)
 }
 
 export default App

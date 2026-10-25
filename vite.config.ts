@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         sidepanel: resolve(process.cwd(), 'index.html'),
         training: resolve(process.cwd(), 'training.html'),
+        print: resolve(process.cwd(), 'print.html'),
         background: resolve(process.cwd(), 'src/background.ts'),
       },
       output: {

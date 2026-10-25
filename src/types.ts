@@ -12,7 +12,13 @@ export type CaptureRecord = {
 }
 
 export type SavedArticle = CaptureRecord & {
+  isFavorite: boolean
   savedAt: string
+}
+
+export type SavedArticleStore = {
+  version: 1
+  items: SavedArticle[]
 }
 
 export type ErrorCode =
@@ -35,6 +41,9 @@ export type ExtensionMessage =
   | { type: 'clear-pending-capture' }
   | { type: 'get-saved-articles' }
   | { type: 'open-saved-article'; articleId: string }
+  | { type: 'open-print-article'; articleId: string }
+  | { type: 'delete-article'; articleId: string }
+  | { type: 'toggle-favorite'; articleId: string }
   | { type: 'save-article'; article: CaptureRecord }
 
 export type ExtensionResponse<T> =
@@ -43,7 +52,8 @@ export type ExtensionResponse<T> =
 
 export type StorageState = {
   pendingCapture?: CaptureRecord | null
-  savedArticles?: SavedArticle[]
+  savedArticles?: SavedArticleStore | SavedArticle[]
   lastTrainingTabId?: number
+  lastPrintTabId?: number
 }
 

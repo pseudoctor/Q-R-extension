@@ -13,6 +13,8 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 const requiredFiles = [
   manifest.background?.service_worker,
   manifest.side_panel?.default_path,
+  'training.html',
+  'print.html',
 ]
 
 for (const file of requiredFiles) {

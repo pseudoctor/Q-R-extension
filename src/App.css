@@ -188,6 +188,28 @@
   text-align: center;
 }
 
+.compact-empty {
+  padding: 22px 18px;
+}
+
+.search-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 13px;
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .empty-mark {
   color: var(--accent);
   font-size: 28px;
@@ -207,9 +229,10 @@
 }
 
 .article-list-item {
-  display: grid;
+  display: flex;
+  align-items: center;
   width: 100%;
-  gap: 5px;
+  gap: 8px;
   padding: 12px 13px;
   border: 1px solid transparent;
   border-radius: 12px;
@@ -223,16 +246,52 @@
   background: var(--accent-soft);
 }
 
-.article-list-item strong {
+.article-open-button {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.article-open-button strong {
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.article-list-item span {
+.article-open-button span {
   color: var(--muted);
   font-size: 11px;
+}
+
+.article-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.article-actions button {
+  min-width: 24px;
+  padding: 4px 3px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.article-actions button:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .panel-footer {
@@ -304,6 +363,28 @@
   margin-top: 18px;
 }
 
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.secondary-button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.secondary-button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .character-count {
   font-size: 12px;
 }
@@ -331,6 +412,65 @@
   color: var(--muted);
 }
 
+.print-shell {
+  width: min(820px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px;
+  background: var(--surface);
+}
+
+.print-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 56px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.print-article h1 {
+  max-width: 720px;
+  margin: 12px 0 20px;
+  color: var(--ink);
+  font-size: clamp(32px, 6vw, 58px);
+  line-height: 1.05;
+  letter-spacing: -0.055em;
+}
+
+.print-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.print-meta a {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--accent);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.print-content {
+  margin-top: 34px;
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 18px;
+  line-height: 1.8;
+}
+
+.print-content p {
+  min-height: 1.8em;
+  margin: 0 0 1em;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 640px) {
   .training-shell {
     padding: 28px 16px 48px;
@@ -348,5 +488,37 @@
   .editor-footer {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .editor-actions {
+    justify-content: stretch;
+  }
+
+  .editor-actions .primary-button,
+  .editor-actions .secondary-button {
+    flex: 1;
+  }
+}
+
+@media print {
+  :root {
+    background: #fff;
+  }
+
+  .print-shell {
+    width: auto;
+    padding: 0;
+  }
+
+  .no-print {
+    display: none;
+  }
+
+  .print-article h1 {
+    font-size: 36px;
+  }
+
+  .print-content {
+    font-size: 12pt;
   }
 }

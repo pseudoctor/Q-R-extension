@@ -1,6 +1,6 @@
 # 问读浏览器插件实施计划
 
-状态：Phase 1 自动验证完成，等待浏览器手工验收
+状态：Phase 2 自动验证完成，等待浏览器手工验收
 版本：MVP-1
 目标平台：Chrome / Edge，Manifest V3
 
@@ -68,7 +68,7 @@ type CaptureRecord = {
 存储键：
 
 - `pendingCapture`: `CaptureRecord | null`，供训练页读取的一次性待处理文章。
-- `savedArticles`: `SavedArticle[]`，第一阶段确认保存后的本地文章列表。
+- `savedArticles`: `{ version: 1, items: SavedArticle[] }`，兼容第一阶段写入的旧数组格式。
 - `lastTrainingTabId`: `number | undefined`，用于尝试聚焦已有训练页；失效后删除并创建新页。
 
 ### 4.2 Service Worker 消息
@@ -173,9 +173,25 @@ type CaptureRecord = {
 - [x] 运行 `node_modules/.bin/oxlint .`、`node_modules/.bin/tsc --noEmit`、`pnpm build` 和 `node scripts/check-extension.mjs`。
 - [x] 检查构建产物不包含源码密钥、全站 host permission 或意外网络依赖。
 - [ ] 完成 Chrome/Edge 手工验收：普通文章、选区、短页面、受限页面、重复快捷键、聚焦训练页。
-- [ ] 完成浏览器手工验收后更新本计划执行状态并提交 Phase 1 commit。
+- [x] 提交 Phase 1 commit：`251dea7 feat(extension): capture articles into training page`。
 
-## 7. 验证矩阵
+## 7. Phase 2 TODO
+
+- [x] 新增 `src/storage/articles.ts`，集中处理版本化读写、旧数组迁移、保存、删除和收藏切换。
+- [x] 将 `savedArticles` 升级为 `{ version: 1, items: SavedArticle[] }`，旧数据读取时自动补齐 `isFavorite: false`。
+- [x] 将单次保存上限从 50 条扩展为 100 条，并保留重复 ID 更新语义。
+- [x] 新增 `src/export/markdown.ts` 和 `src/export/json.ts` 纯函数。
+- [x] Side Panel 增加标题、作者、URL 和正文搜索。
+- [x] Side Panel 增加收藏切换、删除、Markdown、JSON 和 PDF 打印入口。
+- [x] 训练页增加 Markdown、JSON 和打印/PDF 入口。
+- [x] 新增 `print.html`，使用浏览器原生打印流程生成 PDF，不伪造 PDF 文件。
+- [x] 更新 Service Worker 消息协议和打印页标签复用逻辑。
+- [x] 更新扩展静态检查以验证 `print.html` 构建产物。
+- [x] 运行 TypeScript、直接 oxlint、生产构建和扩展静态校验。
+- [ ] 完成浏览器手工验收：迁移旧数组、搜索、收藏、删除、Markdown/JSON 下载和打印保存 PDF。
+- [ ] 完成浏览器手工验收后提交 Phase 2 commit。
+
+## 8. 验证矩阵
 
 自动检查：
 
@@ -199,7 +215,7 @@ type CaptureRecord = {
 | 刷新训练页 | 文章内容和状态不因为 React 刷新而丢失 |
 | 未授权网络 | 插件仍可完成本地捕获和阅读，不产生外部请求 |
 
-## 8. 风险、回滚与不做事项
+## 9. 风险、回滚与不做事项
 
 - 页面结构差异：MVP 使用候选节点和手动粘贴兜底；不在第一阶段引入大型正文解析依赖。
 - 浏览器权限限制：只接受 `activeTab` 和用户手势能访问的页面；失败直接提示，不请求全站权限。
@@ -210,13 +226,14 @@ type CaptureRecord = {
 
 本计划不包含：自动 AI 总结、账号同步、跨设备同步、全站后台抓取、Firefox 适配、商店发布、复制 Glasp 的默认公开数据行为。
 
-## 9. 失败处理与后续交接
+## 10. 失败处理与后续交接
 
 实现过程中若当前脚手架与计划冲突，先在本文件“执行记录”中记录事实和替代方案，再修改计划后继续；不悄悄扩大权限或引入新服务。所有阶段完成后保留自动验证命令、手工验收结果和提交哈希。
 
-## 10. 执行记录
+## 11. 执行记录
 
 - 2026-10-24：完成项目上下文、ADR、构建配置和已有扩展目标核对。
 - 2026-10-24：已启动 planner 子代理请求生成本计划；因代理未在共享目录交付文件，主代理依据同一上下文补写本计划并继续执行。
 - 2026-10-25：完成 Phase 1 MVP 实现；TypeScript、生产构建、直接 oxlint 和扩展静态检查通过。`pnpm lint` 受环境 ESLint JSON 解析包装器影响退出码为 1，直接 oxlint 结果为 0，仅保留一条 React effect 警告。
 - 2026-10-25：浏览器手工加载尚未执行，原因是加载解压扩展会修改浏览器配置，需要用户明确确认后进行。
+- 2026-10-25：完成 Phase 2 本地文章架与导出；版本化存储、迁移、搜索、收藏、删除、Markdown/JSON 下载和打印/PDF 友好页面已实现。TypeScript、直接 oxlint、生产构建和扩展静态检查通过。
