@@ -76,7 +76,6 @@ type CaptureRecord = {
 ### 4.2 Service Worker 消息
 
 - `capture-current-page`: 捕获当前活动标签页并返回 `{ captureId }` 或结构化错误。
-- `open-training-page`: 打开/聚焦 `training.html`。
 - `get-pending-capture`: 训练页读取待处理记录。
 - `save-article`: 训练页保存用户确认后的文章。
 

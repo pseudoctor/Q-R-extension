@@ -1,6 +1,4 @@
-import type { Locale, StorageState } from '../types'
-
-export const SUPPORTED_LOCALES: Locale[] = ['zh-CN', 'en', 'ja', 'ko']
+import type { Locale } from '../types'
 
 export const LOCALE_OPTIONS: Array<{ value: Locale; label: string }> = [
   { value: 'zh-CN', label: '简体中文' },
@@ -20,8 +18,4 @@ export function detectLocale(language = typeof navigator === 'undefined' ? '' : 
   if (normalized.startsWith('ja')) return 'ja'
   if (normalized.startsWith('ko')) return 'ko'
   return 'zh-CN'
-}
-
-export function localeFromStorage(state: StorageState): Locale {
-  return normalizeLocale(state.locale) ?? 'zh-CN'
 }

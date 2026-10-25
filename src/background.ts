@@ -713,8 +713,6 @@ async function handleMessage(
   switch (message.type) {
     case 'capture-current-page':
       return captureAndOpen(message.source)
-    case 'open-training-page':
-      return openTrainingPage()
     case 'open-manual-paste-page':
       await chrome.storage.local.set({ pendingCapture: null })
       await chrome.storage.local.remove(PRE_READING_PREDICTION_DRAFT_KEY)
@@ -782,16 +780,6 @@ async function handleMessage(
         return createError(
           'INVALID_REQUEST',
           error instanceof Error ? error.message : '草稿保存失败。',
-        )
-      }
-    case 'submit-training-answer':
-      try {
-        const session = await saveTrainingDraft(message.articleId, message.answer, await readLocale())
-        return session ? success(session) : createError('INVALID_REQUEST', '没有找到这次训练。')
-      } catch (error) {
-        return createError(
-          'INVALID_REQUEST',
-          error instanceof Error ? error.message : '回答保存失败。',
         )
       }
     case 'reset-training-session':

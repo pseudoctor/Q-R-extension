@@ -74,7 +74,7 @@ if (!appBundle.includes('generateReadingMarkdown') && !appBundle.includes('完�
   throw new Error('训练页面缺少完整阅读记录导出。')
 }
 
-for (const asset of ['assets/donate-alipay.jpg', 'assets/donate-paypal.jpg', 'assets/qr-logo-300.png']) {
+for (const asset of ['assets/donate-alipay.jpg', 'assets/donate-paypal.jpg']) {
   if (!existsSync(resolve(dist, asset))) {
     throw new Error(`构建产物缺少打赏资源：${asset}`)
   }

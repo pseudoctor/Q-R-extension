@@ -1,6 +1,4 @@
-import type { ArticleBlock, CaptureRecord, Locale, SavedArticle } from '../types'
-import { getArticleBlocks } from '../articles/format'
-import { translate } from '../i18n/messages'
+import type { ArticleBlock } from '../types'
 
 export function articleBlocksToMarkdown(blocks: ArticleBlock[]) {
   return blocks.map((block) => {
@@ -17,41 +15,7 @@ export function articleBlocksToMarkdown(blocks: ArticleBlock[]) {
   }).filter(Boolean).join('\n\n')
 }
 
-export function articleToMarkdown(article: CaptureRecord | SavedArticle, locale: Locale = 'zh-CN') {
-  const title = article.title.trim() || translate(locale, 'common.untitled')
-  const metadata = article.metadata ?? {
-    subtitle: '',
-    author: article.author?.trim() ?? '',
-    source: '',
-  }
-  const frontmatter = [
-    '---',
-    `title: ${quoteYaml(title)}`,
-    `subtitle: ${quoteYaml(metadata.subtitle)}`,
-    `author: ${quoteYaml(metadata.author)}`,
-    `source: ${quoteYaml(metadata.source)}`,
-    `preReadingPrediction: ${quoteYaml(article.preReadingPrediction ?? '')}`,
-    `url: ${quoteYaml(article.url)}`,
-    `capturedAt: ${quoteYaml(article.capturedAt)}`,
-    ...(isSavedArticle(article)
-      ? [`savedAt: ${quoteYaml(article.savedAt)}`, `favorite: ${article.isFavorite}`]
-      : []),
-    '---',
-  ].join('\n')
-
-  const prediction = article.preReadingPrediction?.trim()
-  return `${frontmatter}\n\n# ${title}\n\n${prediction ? `## ${translate(locale, 'export.prediction')}\n\n${escapeMarkdownBlock(prediction)}\n\n` : ''}${articleBlocksToMarkdown(getArticleBlocks(article.text, article.blocks))}\n`
-}
-
 function escapeMarkdownBlock(value: string) {
   return value.trim().replace(/^([#>*+\-`])/gm, '\\$1')
-}
-
-function quoteYaml(value: string) {
-  return JSON.stringify(value)
-}
-
-function isSavedArticle(article: CaptureRecord | SavedArticle): article is SavedArticle {
-  return 'savedAt' in article
 }
 

@@ -68,10 +68,6 @@ export async function saveTrainingDraft(articleId: string, answer: string, local
   return updated
 }
 
-export async function submitTrainingAnswer(articleId: string, answer: string, locale: Locale = 'zh-CN') {
-  return saveTrainingDraft(articleId, answer, locale)
-}
-
 export async function setTrainingQuestion(articleId: string, question: string, locale: Locale = 'zh-CN') {
   const session = await getTrainingSession(articleId, locale)
   if (!session) return null

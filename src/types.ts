@@ -141,7 +141,6 @@ export type ExtensionError = {
 
 export type ExtensionMessage =
   | { type: 'capture-current-page'; source: CaptureSource }
-  | { type: 'open-training-page' }
   | { type: 'open-manual-paste-page' }
   | { type: 'open-settings' }
   | { type: 'open-shortcuts' }
@@ -159,11 +158,10 @@ export type ExtensionMessage =
   | { type: 'get-training-session'; articleId: string }
   | { type: 'start-training-session'; articleId: string }
   | { type: 'save-training-draft'; articleId: string; draft: string }
-  | { type: 'submit-training-answer'; articleId: string; answer: string }
   | { type: 'reset-training-session'; articleId: string }
   | { type: 'get-ai-settings' }
   | { type: 'save-ai-settings'; settings: AiSettings }
-  | { type: 'list-ai-models'; settings: AiSettings; force?: boolean }
+  | { type: 'list-ai-models'; settings: AiSettings }
   | { type: 'test-ai-connection'; settings: AiSettings }
   | { type: 'ai-start'; articleId: string }
   | { type: 'ai-grade'; articleId: string }

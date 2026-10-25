@@ -554,7 +554,6 @@ function SettingsPage() {
     const response = await sendExtensionMessage<{ models: AiModelOption[]; source: 'provider' | 'fallback'; warning?: string }>({
       type: 'list-ai-models',
       settings: settingsOverride,
-      force: true,
     })
     setModelsLoading(false)
     if (!response.ok) {
