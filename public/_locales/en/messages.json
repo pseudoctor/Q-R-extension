@@ -1,6 +1,6 @@
 {
-  "extName": { "message": "Toulmin Reader · Browser Companion", "description": "Extension name" },
-  "extDescription": { "message": "Save articles from webpages and continue Toulmin reading training.", "description": "Extension description" },
-  "actionTitle": { "message": "Open Toulmin Reader", "description": "Toolbar action title" },
+  "extName": { "message": "Q&R | AI Critical Reading Coach", "description": "Extension name" },
+  "extDescription": { "message": "Save articles from webpages and train critical reading through questions, argument analysis, and AI feedback.", "description": "Extension description" },
+  "actionTitle": { "message": "Open Q&R", "description": "Toolbar action title" },
   "captureCommand": { "message": "Get the current article and open the Toulmin training page", "description": "Capture shortcut description" }
 }

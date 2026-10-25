@@ -4,7 +4,7 @@ export type MessageCatalog = Record<string, string>
 
 export const messages: Record<Locale, MessageCatalog> = {
   'zh-CN': {
-    'common.productName': '问读',
+    'common.productName': '问读｜AI 批判性阅读教练',
     'common.localOnly': '本地模式',
     'common.pageAccessible': '请从 Chrome 或 Edge 的已加载扩展中打开此页面。',
     'common.loading': '正在加载…',
@@ -328,7 +328,7 @@ export const messages: Record<Locale, MessageCatalog> = {
     'lesson.feynman-review.question': '假设要向不了解这篇文章的人解释它：说清核心论证、最重要的证据和一个限制，最后指出你仍不确定的一点。',
   },
   en: {
-    'common.productName': 'Readwise',
+    'common.productName': 'Q&R | AI Critical Reading Coach',
     'common.localOnly': 'LOCAL ONLY',
     'common.pageAccessible': 'Open this page from a loaded Chrome or Edge extension.',
     'common.loading': 'Loading…',
@@ -440,7 +440,7 @@ export const messages: Record<Locale, MessageCatalog> = {
     'settings.saved': 'Saved to local extension storage. The API key is not written to articles or logs.',
     'settings.connected': 'Connected: {provider} · {model}',
     'settings.supportEyebrow': 'SUPPORT THE PROJECT',
-    'settings.supportHeading': 'If Readwise helps you',
+    'settings.supportHeading': 'If Q&R helps you',
     'settings.supportCopy': 'Buy the author a coffee to show your support.',
     'settings.alipayAlt': 'Alipay donation QR code',
     'settings.paypalAlt': 'PayPal donation QR code',
@@ -538,7 +538,7 @@ export const messages: Record<Locale, MessageCatalog> = {
     'bridge.copyFailed': 'The browser blocked automatic copying. Expand the request and copy it manually.',
     'print.noArticle': 'No article was found to print.',
     'print.loading': 'Loading print content…',
-    'print.title': 'Complete Readwise training record',
+    'print.title': 'Complete Q&R training record',
     'export.articleInfo': 'Article information',
     'export.statusCompleted': 'Completed',
     'export.statusInProgress': 'In progress',
@@ -568,12 +568,12 @@ export const messages: Record<Locale, MessageCatalog> = {
     'export.noGaps': 'No specific gaps were recorded this round.',
     'export.sourceEvidence': 'Source evidence',
     'export.nextQuestion': 'Next question',
-    'export.pdfToolbar': 'Readwise training record · {completed}/{total} rounds',
+    'export.pdfToolbar': 'Q&R training record · {completed}/{total} rounds',
     'export.pdfSave': 'Save as PDF',
     'export.pdfStatus': 'Training status',
     'export.pdfAverage': 'Average score',
     'export.pdfEmptySource': 'The source text is empty.',
-    'export.pdfNote': 'Exported by Readwise. The source text, answers, and feedback come from this browser record.',
+    'export.pdfNote': 'Exported by Q&R. The source text, answers, and feedback come from this browser record.',
     'export.notProvided': 'Not provided',
     'provider.openai': 'OpenAI',
     'provider.deepseek': 'DeepSeek',
@@ -652,7 +652,7 @@ export const messages: Record<Locale, MessageCatalog> = {
     'lesson.feynman-review.question': 'Explain this article to someone unfamiliar with it: state the core argument, most important evidence, and one limitation, then name one uncertainty you still have.',
   },
   ja: {
-    'common.productName': '問読',
+    'common.productName': '问读｜AI批判的読解コーチ',
     'common.localOnly': 'ローカルのみ',
     'common.pageAccessible': '読み込んだ Chrome または Edge 拡張機能からこのページを開いてください。',
     'common.loading': '読み込み中…',
@@ -976,7 +976,7 @@ export const messages: Record<Locale, MessageCatalog> = {
     'lesson.feynman-review.question': 'この記事を知らない人に説明するとします。中心的な論証、最重要の根拠、1 つの限界を述べ、最後に残る不確かさを 1 つ挙げてください。',
   },
   ko: {
-    'common.productName': '문독',
+    'common.productName': '问读 | AI 비판적 읽기 코치',
     'common.localOnly': '로컬 전용',
     'common.pageAccessible': '로드된 Chrome 또는 Edge 확장 프로그램에서 이 페이지를 열어 주세요.',
     'common.loading': '로드 중…',
