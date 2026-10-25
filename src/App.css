@@ -586,7 +586,7 @@
 
 .donation-grid img {
   display: block;
-  width: min(100%, 220px);
+  width: min(100%, 150px);
   aspect-ratio: 1;
   margin: 0 auto 8px;
   border: 1px solid var(--line);
@@ -1186,6 +1186,10 @@
 
   .donation-card {
     padding: 18px;
+  }
+
+  .donation-grid img {
+    width: min(100%, 128px);
   }
 
   .settings-actions-row {
