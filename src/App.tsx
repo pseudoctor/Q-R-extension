@@ -441,22 +441,9 @@ function SettingsPage() {
   const [status, setStatus] = useState('')
   const [permissionStatus, setPermissionStatus] = useState('')
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }).then((response) => {
-        setLoaded(true)
-        if (response.ok) {
-          setSettings(response.data)
-          if (response.data.apiKey.trim()) void refreshModels(response.data, false)
-        } else setStatus(errorMessage(response.error))
-      })
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [])
-
   const provider = providerById(settings.provider)
 
-  async function ensurePermission(settingsOverride: AiSettings = settings) {
+  const ensurePermission = useCallback(async (settingsOverride: AiSettings) => {
     if (!extensionAvailable || !chrome.permissions) return false
     const origin = providerOriginPattern(settingsOverride)
     if (!origin) {
@@ -474,7 +461,7 @@ function SettingsPage() {
       setPermissionStatus(t('settings.permissionGranted'))
     }
     return granted
-  }
+  }, [t])
 
   const saveSettings = async () => {
     if (settings.provider === 'custom' && !isValidCustomEndpoint(settings.endpoint)) {
@@ -483,7 +470,7 @@ function SettingsPage() {
     }
     setBusy(true)
     setStatus('')
-    if (settings.apiKey.trim()) await ensurePermission()
+    if (settings.apiKey.trim()) await ensurePermission(settings)
     const savedSettings = { ...settings, apiKey: settings.apiKey.trim() }
     const response = await sendExtensionMessage<AiSettings>({
       type: 'save-ai-settings',
@@ -532,7 +519,7 @@ function SettingsPage() {
     if (nextSettings.apiKey.trim()) void refreshModels(nextSettings, true)
   }
 
-  async function refreshModels(settingsOverride: AiSettings = settings, requestPermission = true) {
+  const refreshModels = useCallback(async (settingsOverride: AiSettings, requestPermission = true) => {
     setModelsLoading(true)
     setStatus('')
     setModelStatus('')
@@ -563,7 +550,20 @@ function SettingsPage() {
     setModelOptions(response.data.models)
     setModelSource(response.data.source)
     setModelStatus(response.data.warning ?? '')
-  }
+  }, [ensurePermission])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }).then((response) => {
+        setLoaded(true)
+        if (response.ok) {
+          setSettings(response.data)
+          if (response.data.apiKey.trim()) void refreshModels(response.data, false)
+        } else setStatus(errorMessage(response.error))
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [refreshModels])
 
   return (
     <main className="app-shell settings-shell">
@@ -622,7 +622,7 @@ function SettingsPage() {
               </select>
               <div className="model-input-row">
               <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} aria-label={t('settings.manualModelAria')} />
-              <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels()} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? t('settings.fetchingModels') : t('settings.refreshModels')}</button>
+              <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels(settings)} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? t('settings.fetchingModels') : t('settings.refreshModels')}</button>
               </div>
             </div>
             <small>{modelSource === 'fallback' ? t('settings.fallbackHint') : modelOptions.length ? t('settings.loadedModels', { count: modelOptions.length }) : t('settings.modelHint')}</small>

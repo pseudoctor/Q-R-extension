@@ -115,7 +115,7 @@ export function isValidCustomEndpoint(endpoint: string) {
 function isAllowedEndpointProtocol(url: URL) {
   return url.protocol === 'https:' || (
     url.protocol === 'http:' &&
-    ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)
+    ['localhost', '127.0.0.1'].includes(url.hostname)
   )
 }
 

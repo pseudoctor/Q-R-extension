@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "check:article-format": "node --experimental-strip-types scripts/check-article-format.mjs",
     "check:pre-reading": "node --experimental-strip-types scripts/check-pre-reading-prediction.mjs",
-    "check:i18n": "node scripts/check-i18n.mjs"
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "check:storage-concurrency": "node scripts/check-storage-concurrency.mjs",
+    "check:ai-http": "node --experimental-strip-types scripts/check-ai-http.mjs",
+    "check:provider-settings": "node --experimental-strip-types scripts/check-provider-settings.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

@@ -27,6 +27,7 @@ import {
   providerEndpoint,
   providerOriginPattern,
 } from './ai/providers'
+import { withTimeout } from './ai/http'
 import {
   readSavedArticles,
   removeSavedArticle,
@@ -273,8 +274,6 @@ async function saveArticle(
   }
 
   try {
-    const previous = await readSavedArticles()
-    const existing = previous.find((item) => item.id === article.id)
     const metadata = {
       subtitle: article.metadata?.subtitle?.trim() ?? '',
       author: article.metadata?.author?.trim() || article.author?.trim() || '',
@@ -287,11 +286,10 @@ async function saveArticle(
       metadata,
       ...(metadata.author ? { author: metadata.author } : {}),
       blocks: normalizeArticleBlocks(article.blocks, text),
-      isFavorite: existing?.isFavorite ?? false,
+      isFavorite: false,
       savedAt: new Date().toISOString(),
     }
-    await upsertSavedArticle(savedArticle)
-    return success(savedArticle)
+    return success(await upsertSavedArticle(savedArticle))
   } catch {
     return createError('STORAGE_FAILED', '文章保存失败，请稍后重试。')
   }
@@ -312,7 +310,7 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
     return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
   }
   try {
-    const response = await fetch(endpoint, {
+    const response = await withTimeout(TEST_CONNECTION_TIMEOUT_MS, (signal) => fetch(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${normalized.apiKey}`,
@@ -324,13 +322,17 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
         temperature: 0,
         max_tokens: 1,
       }),
-    })
+      signal,
+    }))
     if (!response.ok) {
       const detail = await providerResponseDetail(response)
       return createError('AI_CONNECTION_FAILED', `连接失败（HTTP ${response.status}）${detail ? `：${detail}` : '。请检查 API key 和模型名称。'}`)
     }
     return success({ provider: translate(locale, `provider.${provider.id}`), model: normalized.model })
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return createError('AI_CONNECTION_FAILED', '测试连接超时，请检查服务地址和网络后重试。')
+    }
     return createError('AI_CONNECTION_FAILED', '无法连接模型服务，请检查网络后重试。')
   }
 }
@@ -340,6 +342,7 @@ type AiPrompt = {
   user: string
 }
 
+const TEST_CONNECTION_TIMEOUT_MS = 15_000
 const AI_REQUEST_TIMEOUT_MS = 90_000
 const MODEL_REQUEST_TIMEOUT_MS = 10_000
 
@@ -365,10 +368,8 @@ async function requestAiJson(
     return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
   }
 
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS)
   try {
-    const response = await fetch(endpoint, {
+    const response = await withTimeout(AI_REQUEST_TIMEOUT_MS, (signal) => fetch(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${normalized.apiKey}`,
@@ -383,8 +384,8 @@ async function requestAiJson(
         temperature: 0,
         max_tokens: 4_000,
       }),
-      signal: controller.signal,
-    })
+      signal,
+    }))
     if (!response.ok) {
       return createError('AI_REQUEST_FAILED', `模型服务返回 HTTP ${response.status}，请检查模型名称和 API key。`)
     }
@@ -405,8 +406,6 @@ async function requestAiJson(
       return createError('AI_REQUEST_FAILED', 'AI 请求超时，请稍后重试。')
     }
     return createError('AI_REQUEST_FAILED', '无法连接模型服务，请检查网络后重试。')
-  } finally {
-    clearTimeout(timeout)
   }
 }
 
@@ -444,10 +443,11 @@ async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiM
     return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
   }
 
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), MODEL_REQUEST_TIMEOUT_MS)
   try {
-    const payload = await fetchModelPayload(provider.id, provider.id === 'custom' ? endpoint : provider.baseUrl, normalized.apiKey, controller.signal)
+    const payload = await withTimeout(
+      MODEL_REQUEST_TIMEOUT_MS,
+      (signal) => fetchModelPayload(provider.id, provider.id === 'custom' ? endpoint : provider.baseUrl, normalized.apiKey, signal),
+    )
     const models = normalizeModelList(provider.id, payload)
     if (!models.length) return success({ ...fallback, warning: translate(locale, 'ai.modelsEmpty') })
     return success({ models, source: 'provider' })
@@ -457,8 +457,6 @@ async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiM
       ...fallback,
       warning: translate(locale, 'ai.modelsFetchFailed', { detail: detail ? ` (${detail})` : '' }),
     })
-  } finally {
-    clearTimeout(timeout)
   }
 }
 
