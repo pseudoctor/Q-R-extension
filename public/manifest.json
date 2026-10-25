@@ -20,16 +20,18 @@
   "side_panel": {
     "default_path": "index.html"
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: http: https:;"
+  },
   "permissions": [
     "activeTab",
     "scripting",
     "sidePanel",
     "storage"
   ],
-  "optional_host_permissions": [
-    "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "commands": {
     "capture-and-open": {

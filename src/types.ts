@@ -12,13 +12,19 @@ export type ArticleMetadata = {
   source: string
 }
 
+export type ArticleInline = {
+  text: string
+  emphasis?: 'strong' | 'emphasis' | 'strong-emphasis'
+}
+
 export type ArticleBlock =
-  | { type: 'paragraph'; text: string }
-  | { type: 'heading'; level: number; text: string }
-  | { type: 'quote'; text: string }
-  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'paragraph'; text: string; inlines?: ArticleInline[] }
+  | { type: 'heading'; level: number; text: string; inlines?: ArticleInline[] }
+  | { type: 'quote'; text: string; inlines?: ArticleInline[] }
+  | { type: 'list'; ordered: boolean; items: string[]; itemInlines?: ArticleInline[][] }
   | { type: 'code'; language?: string; text: string }
   | { type: 'image'; src: string; alt: string }
+  | { type: 'chart'; text: string; alt: string }
   | { type: 'divider' }
 
 export type AiSettings = {
@@ -62,6 +68,7 @@ export type AiFeedback = {
   gaps: AiObservation[]
   sources: AiSource[]
   nextQuestion: string
+  nextStepId: string | null
   total: number
 }
 
@@ -97,17 +104,32 @@ export type SavedArticleStore = {
 
 export type TrainingTurn = {
   stepIndex: number
+  stepId?: string
   question: string
   answer: string
   submittedAt: string
+  threeSentenceDrafts?: ThreeSentenceDraft[]
+  paragraphCursor?: number
   feedback?: AiFeedback
 }
 
+export type ThreeSentenceDraft = {
+  paragraph: number
+  what: string
+  why: string
+  takeaway: string
+}
+
+export type TrainingFlowId = 'reading-10' | 'legacy-8'
+
 export type TrainingSession = {
   articleId: string
+  flowId: TrainingFlowId
   currentStep: number
   currentQuestion: string
   draft: string
+  threeSentenceDrafts?: ThreeSentenceDraft[]
+  paragraphCursor?: number
   turns: TrainingTurn[]
   startedAt: string
   updatedAt: string
@@ -116,6 +138,11 @@ export type TrainingSession = {
 
 export type TrainingSessionStore = {
   version: 1
+  items: TrainingSession[]
+}
+
+export type TrainingSessionStoreV2 = {
+  version: 2
   items: TrainingSession[]
 }
 
@@ -132,6 +159,11 @@ export type ErrorCode =
   | 'AI_CONNECTION_FAILED'
   | 'AI_REQUEST_FAILED'
   | 'AI_INVALID_RESPONSE'
+  | 'AI_RESPONSE_INVALID_JSON'
+  | 'AI_QUESTION_INVALID'
+  | 'AI_FEEDBACK_INVALID'
+  | 'TRAINING_ANSWER_FORMAT_INVALID'
+  | 'TRAINING_READ_ONLY'
   | 'SHORTCUTS_PAGE_FAILED'
 
 export type ExtensionError = {
@@ -157,7 +189,8 @@ export type ExtensionMessage =
   | { type: 'toggle-favorite'; articleId: string }
   | { type: 'get-training-session'; articleId: string }
   | { type: 'start-training-session'; articleId: string }
-  | { type: 'save-training-draft'; articleId: string; draft: string }
+  | { type: 'save-training-draft'; articleId: string; draft: string; threeSentenceDrafts?: ThreeSentenceDraft[]; paragraphCursor?: number }
+  | { type: 'rewind-training-session'; articleId: string }
   | { type: 'reset-training-session'; articleId: string }
   | { type: 'get-ai-settings' }
   | { type: 'save-ai-settings'; settings: AiSettings }
@@ -178,6 +211,7 @@ export type StorageState = {
   preReadingPredictionDraft?: PreReadingPredictionDraft | null
   savedArticles?: SavedArticleStore | SavedArticle[]
   trainingSessions?: TrainingSessionStore | TrainingSession[]
+  trainingSessionsV2?: TrainingSessionStoreV2
   aiSettings?: AiSettings
   locale?: Locale
   lastTrainingTabId?: number

@@ -23,7 +23,18 @@ globalThis.chrome = {
 
 const server = await createServer({ root: new URL('..', import.meta.url).pathname, logLevel: 'silent' })
 const { upsertSavedArticle } = await server.ssrLoadModule('/src/storage/articles.ts')
-const { readTrainingSessions, saveTrainingDraft, setTrainingQuestion, startTrainingSession } = await server.ssrLoadModule('/src/storage/training.ts')
+const {
+  TRAINING_SESSIONS_KEY,
+  TRAINING_SESSIONS_V2_KEY,
+  commitTrainingFeedback,
+  getTrainingSession,
+  readTrainingSessions,
+  removeTrainingSession,
+  rewindTrainingSession,
+  saveTrainingDraft,
+  setTrainingQuestion,
+  startTrainingSession,
+} = await server.ssrLoadModule('/src/storage/training.ts')
 
 const article = (id) => ({
   id,
@@ -47,16 +58,51 @@ const savedWithFavorite = await upsertSavedArticle({ ...article('favorite'), tit
 assert.equal(savedWithFavorite.isFavorite, true)
 assert.equal(storage.savedArticles.items.find((item) => item.id === 'favorite')?.isFavorite, true)
 
-await Promise.all([startTrainingSession('training-article'), startTrainingSession('training-article')])
+await Promise.all([
+  startTrainingSession('training-article'),
+  startTrainingSession('second-training-article'),
+  startTrainingSession('training-article'),
+])
 assert.equal((await readTrainingSessions()).filter((session) => session.articleId === 'training-article').length, 1)
+assert.equal((await readTrainingSessions()).filter((session) => session.articleId === 'second-training-article').length, 1)
+assert.equal(storage[TRAINING_SESSIONS_V2_KEY].version, 2)
+assert.equal(storage[TRAINING_SESSIONS_KEY], undefined)
 
 await Promise.all([
-  saveTrainingDraft('training-article', '独立回答'),
+  saveTrainingDraft('training-article', '独立回答内容'),
   setTrainingQuestion('training-article', '并发更新后的问题'),
 ])
 const session = (await readTrainingSessions()).find((item) => item.articleId === 'training-article')
-assert.equal(session?.draft, '独立回答')
+assert.equal(session?.draft, '独立回答内容')
 assert.equal(session?.currentQuestion, '并发更新后的问题')
+
+await commitTrainingFeedback('training-article', { nextQuestion: '下一轮问题', nextStepId: 'quick-browse' })
+const rewound = await rewindTrainingSession('training-article')
+assert.equal(rewound?.currentStep, 0)
+assert.equal(rewound?.flowId, 'reading-10')
+assert.equal(rewound?.currentQuestion, '并发更新后的问题')
+assert.equal(rewound?.draft, '独立回答内容')
+assert.equal(rewound?.turns.length, 0)
+
+storage[TRAINING_SESSIONS_KEY] = {
+  version: 1,
+  items: [{
+    articleId: 'legacy-article',
+    currentStep: 8,
+    currentQuestion: '旧版问题？',
+    draft: '',
+    turns: [],
+    startedAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }],
+}
+assert.equal((await getTrainingSession('legacy-article'))?.flowId, 'legacy-8')
+const upgraded = await startTrainingSession('legacy-article')
+assert.equal(upgraded.flowId, 'reading-10')
+assert.equal(storage[TRAINING_SESSIONS_KEY].items.length, 1)
+assert.equal((await readTrainingSessions()).filter((session) => session.articleId === 'legacy-article').length, 1)
+await removeTrainingSession('legacy-article')
+assert.equal((await getTrainingSession('legacy-article')), null)
 
 console.log('PASS: article and training storage mutations remain lossless under concurrent updates.')
 await server.close()

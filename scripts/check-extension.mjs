@@ -38,8 +38,16 @@ for (const permission of ['activeTab', 'scripting', 'sidePanel', 'storage']) {
   }
 }
 
-if ((manifest.host_permissions ?? []).length > 0) {
-  throw new Error('manifest 不应声明全站 host_permissions，应使用 activeTab 临时访问当前页面。')
+const hostPermissions = new Set(manifest.host_permissions ?? [])
+for (const origin of ['http://*/*', 'https://*/*']) {
+  if (!hostPermissions.has(origin)) {
+    throw new Error(`manifest 缺少文章抓取所需的页面访问权限：${origin}`)
+  }
+}
+
+const extensionCsp = manifest.content_security_policy?.extension_pages ?? ''
+if (!extensionCsp.includes("img-src 'self' data: http: https:")) {
+  throw new Error('manifest 未明确允许扩展页加载 HTTP(S) 图片。')
 }
 
 const command = manifest.commands?.['capture-and-open']
@@ -47,15 +55,12 @@ if (!command?.suggested_key?.default || !command?.description) {
   throw new Error('manifest 缺少 capture-and-open 快捷键配置。')
 }
 
-const optionalOrigins = new Set(manifest.optional_host_permissions ?? [])
-for (const origin of ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*']) {
-  if (!optionalOrigins.has(origin)) {
-    throw new Error(`manifest 缺少 AI 服务的可选网络权限：${origin}`)
-  }
+if ((manifest.optional_host_permissions ?? []).length > 0) {
+  throw new Error('manifest 不应为 AI endpoint 声明重复的 optional host permissions。')
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
-for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'open-manual-paste-page', 'preReadingPredictionDraft', 'save-pre-reading-prediction-draft', 'currentStep', 'articleBody', 'blocks', 'advertisement', 'narrated by', 'itemprop=', '浏览器内部页', '/chat/completions', 'AI_INVALID_ENDPOINT', 'AbortController', 'preReadingPrediction', 'ai.startReflection']) {
+for (const marker of ['ai-start', 'ai-grade', 'rewind-training-session', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'open-manual-paste-page', 'preReadingPredictionDraft', 'save-pre-reading-prediction-draft', 'currentStep', 'nextStepId', 'flowId', 'trainingSessionsV2', 'TRAINING_READ_ONLY', 'articleBody', 'blocks', 'chart', 'svg', 'canvas', 'advertisement', 'narrated by', 'itemprop=', '#rm_txt_zw', 'div, section', '浏览器内部页', '/chat/completions', 'AI_INVALID_ENDPOINT', 'AI_RESPONSE_INVALID_JSON', 'AbortController', 'preReadingPrediction', 'ai.startReflection', 'response_format', 'reasoning_effort']) {
   if (!background.includes(marker)) {
     throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
   }
@@ -65,7 +70,7 @@ const appBundle = readdirSync(resolve(dist, 'assets'))
   .filter((file) => file.endsWith('.js'))
   .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
   .join('\n')
-for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', 'settings.apiEndpoint', 'provider.custom', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new', '阅读前预测', '手动粘贴文章', '快速开始', '获取当前文章', 'open-manual-paste-page', 'save-pre-reading-prediction-draft', 'onChanged']) {
+for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', 'settings.apiEndpoint', 'provider.custom', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new', '阅读前预测', '十步独立阅读训练', 'quick-browse', 'logic-check', 'transitionAfterPreview', 'legacyReadOnly', 'round-transition', '手动粘贴文章', '快速开始', '获取当前文章', 'open-manual-paste-page', 'save-pre-reading-prediction-draft', 'onChanged']) {
   if (!appBundle.includes(marker)) {
     throw new Error(`训练页面缺少核心交互：${marker}`)
   }

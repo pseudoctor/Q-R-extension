@@ -15,7 +15,7 @@ Build a separate Chrome/Edge Manifest V3 project. Use a Side Panel for capture, 
 ## Consequences
 
 - The web application remains independently deployable and remains the fallback experience.
-- Page access is user-initiated through `activeTab` or similarly narrow permissions.
+- Page capture and configured AI endpoints use the declared HTTP/HTTPS host access; no redundant optional host permission is requested for AI providers.
 - Extension storage and the existing web app's `localStorage` require an explicit JSON migration path.
 - The Worker API needs an explicit extension-origin/CORS policy before AI requests are enabled.
 - Firefox support requires a separate UI capability decision because Chrome's Side Panel API is the first target.

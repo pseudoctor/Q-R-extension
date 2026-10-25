@@ -2,6 +2,7 @@ import type {
   AiModelOption,
   AiSettings,
   ArticleBlock,
+  ArticleInline,
   CaptureRecord,
   ErrorCode,
   ExtensionError,
@@ -13,7 +14,7 @@ import type {
   StorageState,
   TrainingSession,
 } from './types'
-import { normalizeArticleBlocks } from './articles/format'
+import { getArticleBlocks, normalizeArticleBlocks, numberArticleBlocks } from './articles/format'
 import {
   buildGradePrompt,
   buildStartPrompt,
@@ -25,7 +26,6 @@ import {
   normalizeAiSettings,
   providerById,
   providerEndpoint,
-  providerOriginPattern,
 } from './ai/providers'
 import { withTimeout } from './ai/http'
 import {
@@ -37,7 +37,10 @@ import {
 import {
   commitTrainingFeedback,
   getTrainingSession,
+  isLegacyTrainingSession,
   removeTrainingSession,
+  resetTrainingSession,
+  rewindTrainingSession,
   saveTrainingDraft,
   setTrainingQuestion,
   startTrainingSession,
@@ -45,6 +48,7 @@ import {
 import { readAiSettings, writeAiSettings } from './storage/ai'
 import { readLocale, writeLocale } from './storage/preferences'
 import { translate } from './i18n/messages'
+import { areThreeSentenceDraftsComplete, isLessonAnswerFormatValid, LESSON_STEPS, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from './training/lessons'
 
 const TRAINING_PAGE = 'training.html'
 const PRE_READING_PREDICTION_DRAFT_KEY = 'preReadingPredictionDraft'
@@ -303,12 +307,7 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
   }
   const provider = providerById(normalized.provider)
   const endpoint = providerEndpoint(normalized)
-  const origin = providerOriginPattern(normalized)
-  if (!endpoint || !origin) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
-  const hasPermission = await chrome.permissions.contains({ origins: [origin] })
-  if (!hasPermission) {
-    return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
-  }
+  if (!endpoint) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
   try {
     const response = await withTimeout(TEST_CONNECTION_TIMEOUT_MS, (signal) => fetch(endpoint, {
       method: 'POST',
@@ -340,6 +339,7 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
 type AiPrompt = {
   system: string
   user: string
+  responseFormat?: Record<string, unknown>
 }
 
 const TEST_CONNECTION_TIMEOUT_MS = 15_000
@@ -356,17 +356,7 @@ async function requestAiJson(
   }
 
   const endpoint = providerEndpoint(normalized)
-  const origin = providerOriginPattern(normalized)
-  if (!endpoint || !origin) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
-  let hasPermission = false
-  try {
-    hasPermission = await chrome.permissions.contains({ origins: [origin] })
-  } catch {
-    return createError('AI_PERMISSION_REQUIRED', '无法确认模型服务网络权限，请回到设置页重新授权。')
-  }
-  if (!hasPermission) {
-    return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
-  }
+  if (!endpoint) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
 
   try {
     const response = await withTimeout(AI_REQUEST_TIMEOUT_MS, (signal) => fetch(endpoint, {
@@ -383,6 +373,9 @@ async function requestAiJson(
         ],
         temperature: 0,
         max_tokens: 4_000,
+        ...(normalized.provider === 'gemini' && prompt.responseFormat
+          ? { reasoning_effort: 'low', response_format: prompt.responseFormat }
+          : {}),
       }),
       signal,
     }))
@@ -394,12 +387,12 @@ async function requestAiJson(
     try {
       payload = await response.json()
     } catch {
-      return createError('AI_INVALID_RESPONSE', '模型服务返回的内容无法解析。')
+      return createError('AI_RESPONSE_INVALID_JSON', '模型服务返回的内容不是有效 JSON。')
     }
     try {
       return success(parseAiJson(payload))
     } catch {
-      return createError('AI_INVALID_RESPONSE', '模型服务没有返回符合要求的 JSON。')
+      return createError('AI_RESPONSE_INVALID_JSON', '模型服务没有返回符合要求的 JSON。')
     }
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -420,8 +413,7 @@ async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiM
   const normalized = normalizeAiSettings(settings)
   const provider = providerById(normalized.provider)
   const endpoint = providerEndpoint(normalized)
-  const origin = providerOriginPattern(normalized)
-  if (!endpoint || !origin) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
+  if (!endpoint) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
   const fallbackModels = normalized.model || provider.defaultModel
     ? [{ id: normalized.model || provider.defaultModel, label: normalized.model || provider.defaultModel }]
     : []
@@ -431,16 +423,6 @@ async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiM
   }
   if (!normalized.apiKey) {
     return success({ ...fallback, warning: translate(locale, 'ai.providerUnavailable', { provider: translate(locale, `provider.${provider.id}`) }) })
-  }
-
-  let hasPermission = false
-  try {
-    hasPermission = await chrome.permissions.contains({ origins: [origin] })
-  } catch {
-    return createError('AI_PERMISSION_REQUIRED', '无法确认模型服务网络权限，请回到设置页重新授权。')
-  }
-  if (!hasPermission) {
-    return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
   }
 
   try {
@@ -596,8 +578,9 @@ async function startAiTraining(articleId: string): Promise<ExtensionResponse<Tra
   if (!article) return createError('INVALID_REQUEST', '没有找到这篇本地文章。')
 
   const session = await startTrainingSession(articleId, locale)
-  if (session.currentStep >= 8) return success(session)
-  const prompt = buildStartPrompt(article.text, article.title, article.metadata, session.currentStep, article.preReadingPrediction, locale)
+  if (session.currentStep === 0 || session.currentStep >= LESSON_STEPS.length) return success(session)
+  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
+  const prompt = buildStartPrompt(article.text, article.title, article.metadata, session.currentStep, article.preReadingPrediction, locale, article.blocks)
   const completion = await requestAiJson(await readAiSettings(), prompt)
   if (!completion.ok) return createError(completion.error.code, completion.error.message)
 
@@ -605,7 +588,7 @@ async function startAiTraining(articleId: string): Promise<ExtensionResponse<Tra
   try {
     question = validateAiQuestion(completion.data)
   } catch {
-    return createError('AI_INVALID_RESPONSE', '模型服务返回的问题不符合训练格式。')
+    return createError('AI_QUESTION_INVALID', '模型服务返回的问题不符合训练格式。')
   }
   const updated = await setTrainingQuestion(articleId, question, locale)
   return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
@@ -620,6 +603,7 @@ async function gradeAiTraining(articleId: string): Promise<ExtensionResponse<Tra
   const legacyTurn = session?.turns.at(-1)
   const draft = session?.draft.trim() || (!legacyTurn?.feedback ? legacyTurn?.answer.trim() : '')
   if (!session || !draft) return createError('INVALID_REQUEST', '还没有可评分的回答。')
+  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
 
   const promptSession: TrainingSession = {
     ...session,
@@ -627,15 +611,18 @@ async function gradeAiTraining(articleId: string): Promise<ExtensionResponse<Tra
     currentStep: session.draft.trim() ? session.currentStep : legacyTurn?.stepIndex ?? session.currentStep,
     currentQuestion: session.draft.trim() ? session.currentQuestion : legacyTurn?.question ?? session.currentQuestion,
   }
-  const prompt = buildGradePrompt(article.text, article.title, article.metadata, promptSession, article.preReadingPrediction, locale)
+  if (!isTrainingAnswerValid(article, promptSession)) {
+    return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
+  }
+  const prompt = buildGradePrompt(article.text, article.title, article.metadata, promptSession, article.preReadingPrediction, locale, article.blocks)
   const completion = await requestAiJson(await readAiSettings(), prompt)
   if (!completion.ok) return createError(completion.error.code, completion.error.message)
 
   let feedback
   try {
-    feedback = validateAiFeedback(completion.data, article.text, draft)
+    feedback = validateAiFeedback(completion.data, article.text, draft, article.blocks, promptSession.currentStep, locale)
   } catch {
-    return createError('AI_INVALID_RESPONSE', '模型服务返回的评分没有通过安全校验，请重试。')
+    return createError('AI_FEEDBACK_INVALID', '模型服务返回的评分没有通过安全校验，请重试。')
   }
   const updated = await commitTrainingFeedback(articleId, feedback, locale)
   return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
@@ -648,9 +635,13 @@ async function prepareAiBridge(articleId: string): Promise<ExtensionResponse<{ r
   if (!article || !session || session.draft.trim().length < 5) {
     return createError('INVALID_REQUEST', '请先写下至少 5 个字符的独立回答。')
   }
+  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
+  if (!isTrainingAnswerValid(article, session)) {
+    return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
+  }
 
   const requestId = createBridgeRequestId(articleId, session)
-  const prompt = buildGradePrompt(article.text, article.title, article.metadata, session, article.preReadingPrediction, locale)
+  const prompt = buildGradePrompt(article.text, article.title, article.metadata, session, article.preReadingPrediction, locale, article.blocks)
   return success({
     requestId,
     prompt: `${prompt.system}\n\n${translate(locale, 'ai.bridgeInstruction', { requestId })}\n\n${translate(locale, 'ai.materialInstruction')}\n${prompt.user}`,
@@ -667,8 +658,12 @@ async function importAiFeedback(
   const article = await getArticle(articleId)
   const session = await getTrainingSession(articleId, locale)
   if (!article || !session) return createError('INVALID_REQUEST', '没有找到这次训练。')
+  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
   if (createBridgeRequestId(articleId, session) !== requestId) {
     return createError('INVALID_REQUEST', '这份反馈不属于当前回答，请重新复制本轮评分请求。')
+  }
+  if (!isTrainingAnswerValid(article, session)) {
+    return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
   }
 
   let payload: unknown
@@ -676,7 +671,7 @@ async function importAiFeedback(
     const clean = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
     payload = JSON.parse(clean) as unknown
   } catch {
-    return createError('AI_INVALID_RESPONSE', '无法读取 JSON，请只粘贴完整的评分反馈。')
+    return createError('AI_RESPONSE_INVALID_JSON', '无法读取 JSON，请只粘贴完整的评分反馈。')
   }
   if (!isRecord(payload) || payload.requestId !== requestId || !isRecord(payload.feedback)) {
     return createError('INVALID_REQUEST', '反馈 requestId 不匹配，或缺少 feedback 对象。')
@@ -684,16 +679,26 @@ async function importAiFeedback(
 
   let feedback
   try {
-    feedback = validateAiFeedback(payload.feedback, article.text, session.draft.trim())
+    feedback = validateAiFeedback(payload.feedback, article.text, session.draft.trim(), article.blocks, session.currentStep, locale)
   } catch {
-    return createError('AI_INVALID_RESPONSE', '反馈没有通过原文、回答和评分格式校验。')
+    return createError('AI_FEEDBACK_INVALID', '反馈没有通过原文、回答和评分格式校验。')
   }
   const updated = await commitTrainingFeedback(articleId, feedback, locale)
   return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
 }
 
+function isTrainingAnswerValid(article: SavedArticle, session: TrainingSession) {
+  const maxLength = session.currentStep === 2 ? THREE_SENTENCE_ANSWER_MAX_LENGTH : TRAINING_ANSWER_MAX_LENGTH
+  if (session.draft.trim().length < 5 || session.draft.length > maxLength) return false
+  if (session.currentStep === 2) {
+    const paragraphNumbers = numberArticleBlocks(getArticleBlocks(article.text, article.blocks)).map(({ paragraph }) => paragraph)
+    return areThreeSentenceDraftsComplete(session.threeSentenceDrafts ?? [], paragraphNumbers)
+  }
+  return isLessonAnswerFormatValid(session.currentStep, session.draft)
+}
+
 function createBridgeRequestId(articleId: string, session: TrainingSession) {
-  const identity = JSON.stringify([articleId, session.currentStep, session.currentQuestion, session.draft.trim()])
+  const identity = JSON.stringify([articleId, session.flowId, session.currentStep, session.currentQuestion, session.draft.trim()])
   let hash = 14695981039346656037n
   for (const byte of new TextEncoder().encode(identity)) {
     hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 1099511628211n)
@@ -703,6 +708,10 @@ function createBridgeRequestId(articleId: string, session: TrainingSession) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function trainingReadOnlyError(locale: Locale): ExtensionResponse<never> {
+  return createError('TRAINING_READ_ONLY', translate(locale, 'error.TRAINING_READ_ONLY'))
 }
 
 async function handleMessage(
@@ -772,7 +781,15 @@ async function handleMessage(
       return success(await startTrainingSession(message.articleId, await readLocale()))
     case 'save-training-draft':
       try {
-        const session = await saveTrainingDraft(message.articleId, message.draft, await readLocale())
+        const existing = await getTrainingSession(message.articleId, await readLocale())
+        if (isLegacyTrainingSession(existing)) return trainingReadOnlyError(await readLocale())
+        const session = await saveTrainingDraft(
+          message.articleId,
+          message.draft,
+          await readLocale(),
+          message.threeSentenceDrafts,
+          message.paragraphCursor,
+        )
         return session ? success(session) : createError('INVALID_REQUEST', '没有找到这次训练。')
       } catch (error) {
         return createError(
@@ -780,8 +797,14 @@ async function handleMessage(
           error instanceof Error ? error.message : '草稿保存失败。',
         )
       }
+    case 'rewind-training-session': {
+      const existing = await getTrainingSession(message.articleId, await readLocale())
+      if (isLegacyTrainingSession(existing)) return trainingReadOnlyError(await readLocale())
+      const session = await rewindTrainingSession(message.articleId, await readLocale())
+      return session ? success(session) : createError('INVALID_REQUEST', '没有可以回退的训练回合。')
+    }
     case 'reset-training-session':
-      await removeTrainingSession(message.articleId, await readLocale())
+      await resetTrainingSession(message.articleId, await readLocale())
       return success(null)
     case 'get-ai-settings':
       return success(await readAiSettings())
@@ -868,6 +891,7 @@ function extractArticleFromPage(): PageExtraction {
   }
 
   const selectors: Array<[string, number]> = [
+    ['#rm_txt_zw', 14_000],
     ['[itemprop="articleBody"]', 12_000],
     ['article', 10_000],
     ['.article-content, .article-body, .post-content, .entry-content, .article__content, .story-body', 7_000],
@@ -881,6 +905,12 @@ function extractArticleFromPage(): PageExtraction {
       candidates.set(element, Math.max(weight, candidates.get(element) ?? 0))
     })
   }
+  document.querySelectorAll<HTMLElement>('div, section').forEach((element) => {
+    const longParagraphCount = Array.from(element.querySelectorAll('p'))
+      .filter((paragraph) => normalize(paragraph.innerText).length >= 40)
+      .length
+    if (longParagraphCount >= 2) candidates.set(element, Math.max(900, candidates.get(element) ?? 0))
+  })
 
   let bestText = ''
   let bestBlocks: ArticleBlock[] = []
@@ -890,14 +920,18 @@ function extractArticleFromPage(): PageExtraction {
     const blocks = extractBlocks(clone)
     const text = blocksToText(blocks) || normalize(clone.innerText)
     if (!text) continue
-    const paragraphCount = Array.from(clone.querySelectorAll('p'))
-      .filter((paragraph) => normalize(paragraph.innerText).length >= 40)
-      .length
+    const paragraphs = Array.from(clone.querySelectorAll('p'))
+    const paragraphTextLength = paragraphs.reduce((total, paragraph) => total + normalize(paragraph.innerText).length, 0)
+    const paragraphCount = paragraphs.filter((paragraph) => normalize(paragraph.innerText).length >= 40).length
     const sentenceCount = (text.match(/[。！？.!?]/g) ?? []).length
     const linkTextLength = Array.from(clone.querySelectorAll('a'))
       .reduce((total, link) => total + normalize(link.textContent ?? '').length, 0)
     const linkPenalty = Math.min(text.length, linkTextLength) * 1.4
-    const score = weight + Math.min(text.length, 24_000) + paragraphCount * 160 + sentenceCount * 8 - linkPenalty
+    const nonParagraphTextLength = paragraphTextLength > 0 ? Math.max(0, text.length - paragraphTextLength) : 0
+    const nonParagraphPenalty = nonParagraphTextLength * 1.2
+    const paragraphDensity = paragraphTextLength / Math.max(text.length, 1)
+    const score = weight + Math.min(paragraphTextLength || text.length, 24_000) + paragraphCount * 160 + sentenceCount * 8
+      + paragraphDensity * 1_500 - linkPenalty - nonParagraphPenalty
     if (score > bestScore) {
       bestScore = score
       bestText = text
@@ -906,11 +940,10 @@ function extractArticleFromPage(): PageExtraction {
   }
 
   const structuredText = normalize(structured.articleBody)
-  const text = structuredText.length >= minArticleTextLength && structuredText.length > bestText.length
-    ? structuredText
-    : bestText
-  const blocks = limitBlocks(structuredText.length >= minArticleTextLength && structuredText.length > bestText.length
-    ? textToBlocks(structuredText)
+  const useStructuredText = structuredText.length >= minArticleTextLength && structuredText.length > bestText.length
+  const text = useStructuredText ? structuredText : bestText
+  const blocks = limitBlocks(useStructuredText
+    ? preserveVisuals(textToBlocks(structuredText), bestBlocks)
     : bestBlocks)
   const normalizedText = blocksToText(blocks) || text.slice(0, maxArticleTextLength)
 
@@ -949,6 +982,7 @@ function extractArticleFromPage(): PageExtraction {
     return blocks.flatMap((block) => {
       if (block.type === 'list') return [block.items.join('\n')]
       if (block.type === 'image') return block.alt ? [block.alt] : []
+      if (block.type === 'chart') return [block.text]
       if (block.type === 'divider') return []
       return [block.text]
     }).join('\n\n').trim().slice(0, maxArticleTextLength)
@@ -959,7 +993,7 @@ function extractArticleFromPage(): PageExtraction {
     const limited: ArticleBlock[] = []
     for (const block of blocks) {
       if (remaining <= 0) break
-      if (block.type === 'image' || block.type === 'divider') {
+      if (block.type === 'image' || block.type === 'chart' || block.type === 'divider') {
         limited.push(block)
         continue
       }
@@ -984,6 +1018,21 @@ function extractArticleFromPage(): PageExtraction {
     return limited
   }
 
+  function preserveVisuals(blocks: ArticleBlock[], fallbackBlocks: ArticleBlock[]) {
+    const visuals = fallbackBlocks.filter((block) => block.type === 'image' || block.type === 'chart')
+    if (!visuals.length) return blocks
+    const preserved = [...blocks]
+    for (const visual of visuals) {
+      const visualText = visual.type === 'image' ? visual.alt : visual.text
+      const captionIndex = visualText
+        ? preserved.findIndex((block) => 'text' in block && block.text.includes(visualText))
+        : -1
+      if (captionIndex >= 0) preserved.splice(captionIndex, 0, visual)
+      else preserved.push(visual)
+    }
+    return preserved
+  }
+
   function extractBlocks(root: HTMLElement): ArticleBlock[] {
     const blocks: ArticleBlock[] = []
     const addText = (type: 'paragraph' | 'heading' | 'quote', value: string, level?: number) => {
@@ -992,18 +1041,43 @@ function extractArticleFromPage(): PageExtraction {
       if (type === 'heading') blocks.push({ type, level: level ?? 2, text })
       else blocks.push({ type, text })
     }
+    const addInlineText = (type: 'paragraph' | 'heading' | 'quote', element: Element, level?: number) => {
+      const inlines = readInlineSegments(element, type === 'quote')
+      const text = inlines.map((inline) => inline.text).join('').trim()
+      if (!text) return
+      if (type === 'heading') blocks.push({ type, level: level ?? 2, text, inlines })
+      else blocks.push({ type, text, inlines })
+    }
+    const addChart = (chart: Element, figure?: Element) => {
+      const descriptions = [
+        chart.getAttribute('aria-label'),
+        chart.getAttribute('title'),
+        chart.querySelector('title')?.textContent,
+        figure?.querySelector('figcaption')?.textContent,
+        chart.tagName.toLowerCase() === 'svg' ? chart.textContent : '',
+      ]
+        .map((value) => (value ?? '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .filter((value, index, values) => values.indexOf(value) === index)
+      const text = (descriptions.join('；') || '原文提供图表，但未提供可读取的图表说明。').slice(0, 600)
+      blocks.push({ type: 'chart', text, alt: descriptions[0] ?? '原文图表' })
+    }
     const visit = (element: Element) => {
       const tag = element.tagName.toLowerCase()
       if (/^h[1-6]$/.test(tag)) {
-        addText('heading', element.textContent ?? '', Number(tag.slice(1)))
+        addInlineText('heading', element, Number(tag.slice(1)))
         return
       }
       if (tag === 'p') {
-        addText('paragraph', element.textContent ?? '')
+        addInlineText('paragraph', element)
         return
       }
       if (tag === 'blockquote') {
-        addText('quote', element.textContent ?? '')
+        addInlineText('quote', element)
+        return
+      }
+      if (tag === 'svg' || tag === 'canvas') {
+        addChart(element)
         return
       }
       if (tag === 'pre') {
@@ -1016,18 +1090,27 @@ function extractArticleFromPage(): PageExtraction {
         return
       }
       if (tag === 'ul' || tag === 'ol') {
-        const items = Array.from(element.children)
+        const itemElements = Array.from(element.children)
           .filter((child) => child.tagName.toLowerCase() === 'li')
-          .map((item) => {
+        const listItems = itemElements.map((item) => {
             const clone = item.cloneNode(true) as HTMLElement
             clone.querySelectorAll('ul, ol').forEach((nested) => nested.remove())
-            return (clone.textContent ?? '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim()
+            return {
+              text: (clone.textContent ?? '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim(),
+              inlines: readInlineSegments(clone, false),
+            }
           })
-          .filter(Boolean)
-        if (items.length) blocks.push({ type: 'list', ordered: tag === 'ol', items })
+        const items = listItems.filter((item) => item.text)
+        const itemInlines = items.map((item) => item.inlines)
+        if (items.length) blocks.push({ type: 'list', ordered: tag === 'ol', items: items.map((item) => item.text), itemInlines })
         return
       }
       if (tag === 'figure') {
+        const chart = element.querySelector('svg, canvas')
+        if (chart) {
+          addChart(chart, element)
+          return
+        }
         const image = element.querySelector('img')
         if (image) visit(image)
         const caption = element.querySelector('figcaption')
@@ -1037,8 +1120,10 @@ function extractArticleFromPage(): PageExtraction {
       if (tag === 'img') {
         const rawSrc = (element as HTMLImageElement).currentSrc || (element as HTMLImageElement).src
         try {
-          const src = new URL(rawSrc, window.location.href).href
-          if (/^https?:$/i.test(new URL(src).protocol)) blocks.push({ type: 'image', src, alt: (element.getAttribute('alt') ?? '').trim() })
+          const url = new URL(rawSrc, window.location.href)
+          if (isAllowedImageSource(url)) {
+            blocks.push({ type: 'image', src: url.href, alt: (element.getAttribute('alt') ?? '').trim() })
+          }
         } catch {
           return
         }
@@ -1051,21 +1136,74 @@ function extractArticleFromPage(): PageExtraction {
       const children = Array.from(element.children)
       const hasBlockChildren = children.some((child) => /^(article|blockquote|div|figure|h[1-6]|li|main|ol|p|pre|section|ul|hr)$/i.test(child.tagName))
       if (!children.length || !hasBlockChildren) {
-        addText('paragraph', element.textContent ?? '')
+        addInlineText('paragraph', element)
         return
       }
       children.forEach(visit)
     }
     visit(root)
     return blocks
+
+    function readInlineSegments(element: Element, preserveNewlines: boolean): ArticleInline[] {
+      const segments: ArticleInline[] = []
+      const visitNode = (node: Node, emphasis?: ArticleInline['emphasis']) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const text = (node.textContent ?? '')
+            .replace(/\u00a0/g, ' ')
+            .replace(preserveNewlines ? /[ \t]+/g : /\s+/g, ' ')
+          if (!text) return
+          const previous = segments.at(-1)
+          if (previous && previous.emphasis === emphasis) previous.text += text
+          else segments.push({ text, ...(emphasis ? { emphasis } : {}) })
+          return
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return
+        const child = node as Element
+        const tag = child.tagName.toLowerCase()
+        if (tag === 'br') {
+          const previous = segments.at(-1)
+          if (previous && previous.emphasis === emphasis) previous.text += '\n'
+          else segments.push({ text: '\n', ...(emphasis ? { emphasis } : {}) })
+          return
+        }
+        const isStrong = tag === 'strong' || tag === 'b'
+        const isEmphasis = tag === 'em' || tag === 'i'
+        const nextEmphasis = isStrong && isEmphasis
+          ? 'strong-emphasis'
+          : isStrong
+            ? emphasis === 'emphasis' ? 'strong-emphasis' : 'strong'
+            : isEmphasis
+              ? emphasis === 'strong' ? 'strong-emphasis' : 'emphasis'
+              : emphasis
+        child.childNodes.forEach((childNode) => visitNode(childNode, nextEmphasis))
+      }
+      element.childNodes.forEach((child) => visitNode(child))
+      const normalized = segments
+        .map((segment) => ({ ...segment, text: segment.text.replace(preserveNewlines ? /[ \t]+/g : /\s+/g, ' ') }))
+        .filter((segment) => segment.text)
+      const joined = normalized.map((segment) => segment.text).join('').trim()
+      if (!joined) return []
+      let remaining = joined
+      return normalized.flatMap((segment) => {
+        const text = segment.text.slice(Math.max(0, segment.text.length - remaining.length))
+        remaining = remaining.slice(text.length)
+        return text ? [{ ...segment, text }] : []
+      })
+    }
+
+    function isAllowedImageSource(url: URL) {
+      return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password
+    }
   }
 
   function cleanClone(element: HTMLElement) {
     const clone = element.cloneNode(true) as HTMLElement
     clone.querySelectorAll([
-      'script', 'style', 'noscript', 'nav', 'aside', 'footer', 'form', 'header', 'svg', 'button',
-      'iframe', 'canvas', 'video', 'audio', '[aria-hidden="true"]', '[role="navigation"]',
+      'script', 'style', 'noscript', 'nav', 'aside', 'footer', 'form', 'header', 'button',
+      'iframe', 'video', 'audio', '[aria-hidden="true"]', '[role="navigation"]',
       '[role="complementary"]', '[role="contentinfo"]',
+      '[id*="nav" i]', '[class*="nav" i]', '[id*="header" i]', '[class*="header" i]',
+      '[id*="footer" i]', '[class*="footer" i]', '[id*="breadcrumb" i]', '[class*="breadcrumb" i]',
       '.ad', '.ads', '.advertisement', '.advert', '.sidebar', '.comments', '.comment',
       '.related', '.share', '.social', '.newsletter', '.cookie', 'ins',
       '[data-testid*="ad" i]', '[aria-label*="advertisement" i]', '[class*="audio" i]', '[class*="listen" i]',

@@ -1,13 +1,14 @@
-import type { ArticleBlock, CaptureRecord, Locale, SavedArticle, TrainingSession } from '../types'
+import type { ArticleBlock, ArticleInline, CaptureRecord, Locale, SavedArticle, TrainingSession, TrainingFlowId } from '../types'
 import { articleBlocksToText, getArticleBlocks } from '../articles/format'
 import { articleBlocksToMarkdown } from './markdown'
-import { getLessonSteps, LESSON_STEPS } from '../training/lessons'
+import { getLegacyLessonSteps, getLessonSteps, LESSON_STEPS } from '../training/lessons'
 import { translate } from '../i18n/messages'
 
 export const MAX_OBSIDIAN_URI_LENGTH = 6_000
 
 export type ReadingExportModel = {
   exportVersion: 3
+  flowId: TrainingFlowId
   locale: Locale
   title: string
   metadata: { subtitle: string; author: string; source: string }
@@ -46,9 +47,14 @@ export function buildReadingExportModel(
   }
   const turns = session?.turns ?? []
   const articleBlocks = getArticleBlocks(article.text, article.blocks)
-  const steps = getLessonSteps(locale)
+  const flowId = session?.flowId ?? 'reading-10'
+  const legacy = flowId === 'legacy-8'
+  const steps = legacy ? getLegacyLessonSteps(locale) : getLessonSteps(locale)
+  const totalSteps = legacy ? 8 : LESSON_STEPS.length
+  const completedRounds = Math.min(totalSteps, turns.length)
   return {
     exportVersion: 3,
+    flowId,
     locale,
     title: article.title.trim() || translate(locale, 'common.untitled'),
     metadata: {
@@ -61,15 +67,15 @@ export function buildReadingExportModel(
     created: article.capturedAt,
     exportedAt: now.toISOString(),
     favorite: 'isFavorite' in article && article.isFavorite === true,
-    status: turns.length >= LESSON_STEPS.length ? 'completed' : turns.length ? 'in-progress' : 'unread',
-    progress: { completed: Math.min(LESSON_STEPS.length, turns.length), total: LESSON_STEPS.length },
+    status: completedRounds >= totalSteps || Boolean(session?.completedAt) ? 'completed' : turns.length ? 'in-progress' : 'unread',
+    progress: { completed: completedRounds, total: totalSteps },
     averageScore: averageScore(turns),
     articleBlocks,
     articleParagraphs: splitArticle(articleBlocksToText(articleBlocks)),
     turns: turns.map((turn, index) => ({
       number: index + 1,
-      stage: steps[turn.stepIndex]?.stage ?? steps[0].stage,
-      step: steps[turn.stepIndex]?.name ?? translate(locale, 'coach.heading'),
+      stage: steps[turn.stepId ? steps.findIndex((step) => step.id === turn.stepId) : turn.stepIndex]?.stage ?? steps[0].stage,
+      step: steps[turn.stepId ? steps.findIndex((step) => step.id === turn.stepId) : turn.stepIndex]?.name ?? translate(locale, 'coach.heading'),
       question: turn.question,
       answer: turn.answer,
       date: turn.submittedAt,
@@ -191,16 +197,28 @@ function articleBlocksToHtml(blocks: ArticleBlock[]) {
   let sourceNumber = 0
   const number = () => String(++sourceNumber).padStart(2, '0')
   return blocks.map((block) => {
-    if (block.type === 'paragraph') return `<p class="source-paragraph"><span>${number()}</span>${escapeHtml(block.text)}</p>`
-    if (block.type === 'heading') return `<h${block.level} class="source-heading"><span>${number()}</span>${escapeHtml(block.text)}</h${block.level}>`
-    if (block.type === 'quote') return `<blockquote class="source-quote"><span>${number()}</span>${escapeHtml(block.text)}</blockquote>`
+    if (block.type === 'paragraph') return `<p class="source-paragraph"><span>${number()}</span>${inlineHtml(block.text, block.inlines)}</p>`
+    if (block.type === 'heading') return `<h${block.level} class="source-heading">${inlineHtml(block.text, block.inlines)}</h${block.level}>`
+    if (block.type === 'quote') return `<blockquote class="source-quote"><span>${number()}</span>${inlineHtml(block.text, block.inlines)}</blockquote>`
     if (block.type === 'list') {
       const tag = block.ordered ? 'ol' : 'ul'
-      return `<${tag} class="source-list">${block.items.map((item) => `<li><span>${number()}</span>${escapeHtml(item)}</li>`).join('')}</${tag}>`
+      return `<${tag} class="source-list">${block.items.map((item, index) => `<li>${inlineHtml(item, block.itemInlines?.[index])}</li>`).join('')}</${tag}>`
     }
     if (block.type === 'code') return `<pre class="source-code"><code>${escapeHtml(block.text)}</code></pre>`
     if (block.type === 'image') return `<figure class="source-image"><img src="${escapeHtml(block.src)}" alt="${escapeHtml(block.alt)}" />${block.alt ? `<figcaption>${escapeHtml(block.alt)}</figcaption>` : ''}</figure>`
+    if (block.type === 'chart') return `<figure class="source-chart"><figcaption>${escapeHtml(block.alt || '图表')}</figcaption><p>${escapeHtml(block.text)}</p></figure>`
     return '<hr />'
+  }).join('')
+}
+
+function inlineHtml(text: string, inlines?: ArticleInline[]) {
+  if (!inlines?.length) return escapeHtml(text)
+  return inlines.map((inline) => {
+    const value = escapeHtml(inline.text)
+    if (inline.emphasis === 'strong-emphasis') return `<strong><em>${value}</em></strong>`
+    if (inline.emphasis === 'strong') return `<strong>${value}</strong>`
+    if (inline.emphasis === 'emphasis') return `<em>${value}</em>`
+    return value
   }).join('')
 }
 

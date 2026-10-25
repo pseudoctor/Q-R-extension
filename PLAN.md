@@ -25,7 +25,7 @@
 - 扩展入口：Side Panel 用于最近捕获和启动阅读；完整训练内容在独立扩展标签页中打开。
 - 数据边界：第一阶段只使用 `chrome.storage.local`；正文不放入 URL，不发往第三方服务。
 - 快捷键：通过 Manifest `commands` 声明可配置默认键，用户可在浏览器扩展快捷键设置中修改。
-- 权限最小化：`sidePanel`、`storage`、`activeTab`、`scripting`；快捷键使用 Manifest 顶层 `commands` 配置，不申请全站 `host_permissions`。
+- 权限分层：文章抓取使用 `http://*/*` 和 `https://*/*` 页面访问权限，AI 服务只使用用户手势申请的 `optional_host_permissions`；快捷键使用 Manifest 顶层 `commands` 配置。
 - 安全边界：仅响应用户快捷键或插件页面按钮触发的当前页捕获；不做后台抓取、不做遥测、不保存密钥。
 
 ## 3. 推荐架构
@@ -185,7 +185,7 @@ type CaptureRecord = {
 - [x] 更新 MV3 manifest 和 Vite 构建输出。
 - [x] 增加扩展静态检查脚本。
 - [x] 运行 `node_modules/.bin/oxlint .`、`node_modules/.bin/tsc --noEmit`、`pnpm build` 和 `node scripts/check-extension.mjs`。
-- [x] 检查构建产物不包含源码密钥、全站 host permission 或意外网络依赖。
+- [x] 检查构建产物不包含源码密钥、未声明的 host permission 或意外网络依赖。
 - [ ] 完成 Chrome/Edge 手工验收：普通文章、选区、短页面、受限页面、重复快捷键、聚焦训练页。
 - [x] 提交 Phase 1 commit：`251dea7 feat(extension): capture articles into training page`。
 
@@ -268,7 +268,7 @@ type CaptureRecord = {
 ## 10. 风险、回滚与不做事项
 
 - 页面结构差异：MVP 使用候选节点和手动粘贴兜底；不在第一阶段引入大型正文解析依赖。
-- 浏览器权限限制：只接受 `activeTab` 和用户手势能访问的页面；失败直接提示，不请求全站权限。
+- 浏览器权限限制：文章抓取使用已声明的页面访问权限，AI 服务权限仍按用户手势按需申请；受限页面失败直接提示，不尝试绕过浏览器权限。
 - 存储配额：第一阶段限制正文长度并保存单条 pending 记录；Phase 2 再引入版本化存储和配额提示。
 - Service Worker 生命周期：不依赖内存状态，捕获数据写入 `chrome.storage.local` 后再打开训练页。
 - 用户隐私：不上传正文、不加遥测、不把全文放入 URL；后续远程 AI 必须单独设计并获得明确配置。

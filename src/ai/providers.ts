@@ -3,7 +3,6 @@ import type { AiProviderId, AiSettings } from '../types'
 export type AiProvider = {
   id: AiProviderId
   baseUrl: string
-  hostPattern: string
   defaultModel: string
 }
 
@@ -11,43 +10,36 @@ export const AI_PROVIDERS: AiProvider[] = [
   {
     id: 'openai',
     baseUrl: 'https://api.openai.com/v1',
-    hostPattern: 'https://api.openai.com/*',
     defaultModel: 'gpt-5.4-mini',
   },
   {
     id: 'deepseek',
     baseUrl: 'https://api.deepseek.com',
-    hostPattern: 'https://api.deepseek.com/*',
     defaultModel: 'deepseek-flash',
   },
   {
     id: 'gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    hostPattern: 'https://generativelanguage.googleapis.com/*',
     defaultModel: 'gemini-2.5-flash',
   },
   {
     id: 'qwen',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    hostPattern: 'https://dashscope.aliyuncs.com/*',
     defaultModel: 'qwen-plus',
   },
   {
     id: 'glm',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    hostPattern: 'https://open.bigmodel.cn/*',
     defaultModel: 'glm-4-plus',
   },
   {
     id: 'kimi',
     baseUrl: 'https://api.moonshot.cn/v1',
-    hostPattern: 'https://api.moonshot.cn/*',
     defaultModel: 'kimi-k2.5',
   },
   {
     id: 'custom',
     baseUrl: '',
-    hostPattern: '',
     defaultModel: '',
   },
 ]
@@ -85,19 +77,6 @@ export function providerEndpoint(settings: AiSettings) {
   return provider.id === 'custom'
     ? settings.endpoint.trim()
     : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
-}
-
-export function providerOriginPattern(settings: AiSettings) {
-  const provider = providerById(settings.provider)
-  if (provider.id !== 'custom') return provider.hostPattern
-  if (!isValidCustomEndpoint(settings.endpoint)) return ''
-  try {
-    const url = new URL(providerEndpoint(settings))
-    if (!isAllowedEndpointProtocol(url)) return ''
-    return `${url.protocol}//${url.host}/*`
-  } catch {
-    return ''
-  }
 }
 
 export function isValidCustomEndpoint(endpoint: string) {
