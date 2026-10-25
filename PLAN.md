@@ -1,6 +1,6 @@
 # 问读浏览器插件实施计划
 
-状态：Phase 3B CORS 基础完成，等待远程 AI 权限决策与浏览器手工验收
+状态：Phase 3B AI 配置完成，等待 AI 训练调用与浏览器手工验收
 版本：MVP-1
 目标平台：Chrome / Edge，Manifest V3
 
@@ -147,13 +147,14 @@ type CaptureRecord = {
 
 验收包含离线训练、刷新恢复、重复提交限制、删除文章同时删除训练记录、八轮完成状态。
 
-### Phase 3B：可选 Worker AI 辅助（待单独决策）
+### Phase 3B：插件内 AI 配置与可选辅助
 
-独立交付标准：用户明确配置 Worker URL 后才启用 AI；AI 失败不会影响本地训练记录；Worker 具备明确的扩展来源 CORS 策略。
+独立交付标准：用户在插件设置中选择 Provider、填写模型和 API key 后才启用 AI；未配置 AI 时插件仍完整支持离线训练；AI 失败不会影响本地训练记录。
 
 - 由扩展项目维护 API URL、超时、错误码和请求版本，不把原 Web 应用的 `/api/train` 假设直接写死。
-- 由原 Worker 项目单独增加扩展来源 CORS 白名单和预检响应，先完成契约测试再接入。
-- API key 只能由用户明确提供并保存在扩展本地存储；禁止写入 URL、日志和提交记录。
+- Provider、模型、API key 在插件设置页配置；API key 只能由用户明确提供并保存在扩展本地存储，禁止写入 URL、日志和提交记录。
+- 直连模型服务只使用 manifest 的 optional host permission；用户点击保存/测试时才请求对应服务域名权限。
+- 原 Worker 的 CORS allowlist 作为未来自建代理/同步的可选能力，不是插件运行前提。
 - 在本地训练完成后提供“请求 AI 反馈”入口，AI 返回失败时保留当前回答和本地进度。
 
 ### Phase 4：发布与兼容性
@@ -218,12 +219,13 @@ type CaptureRecord = {
 - [x] 原 Worker 增加 `EXTENSION_ORIGINS` 精确 allowlist；默认空值时保持同源安全边界。
 - [x] 原 Worker 增加扩展来源的 OPTIONS 预检响应和白名单响应头。
 - [x] 原 Worker 安全测试覆盖已配置扩展 Origin、未配置扩展 Origin 和 API key 不回显。
-- [ ] 决定扩展是否申请可配置 Worker 域名的 optional host permission。
-- [ ] 在扩展中增加 Worker URL、provider、model 和 API key 的本地设置界面。
-- [ ] 通过用户手势请求目标域名权限，并在权限拒绝时保持离线训练可用。
+- [x] 在扩展中增加 Provider、model 和 API key 的本地设置界面。
+- [x] 为常见 Provider 声明 optional host permission，并通过用户手势请求目标域名权限。
+- [x] 在权限拒绝时保持离线训练可用，并显示明确状态。
+- [x] 增加模型连接测试，不在日志或响应中回显 API key。
 - [ ] 接入 `/api/train` 的 start/grade 请求、超时、错误和本地回答保留。
 - [ ] 对 AI 返回的 question、feedback、引用和当前回答做结构化校验。
-- [ ] 在原 Worker 部署环境配置 `EXTENSION_ORIGINS=chrome-extension://<固定扩展ID>`。
+- [ ] 如果未来启用 Worker 代理，在原 Worker 部署环境配置 `EXTENSION_ORIGINS=chrome-extension://<固定扩展ID>`。
 
 ## 9. 验证矩阵
 
@@ -272,4 +274,4 @@ type CaptureRecord = {
 - 2026-10-25：浏览器手工加载尚未执行，原因是加载解压扩展会修改浏览器配置，需要用户明确确认后进行。
 - 2026-10-25：完成 Phase 2 本地文章架与导出；版本化存储、迁移、搜索、收藏、删除、Markdown/JSON 下载和打印/PDF 友好页面已实现。TypeScript、直接 oxlint、生产构建和扩展静态检查通过。
 - 2026-10-25：完成 Phase 3A 本地离线训练；复用了原项目 8 轮课程文本，但未复制 AI/Next/Cloudflare 运行时。TypeScript、直接 oxlint、生产构建和扩展静态检查通过。
-- 2026-10-25：完成 Phase 3B 的 Worker CORS 基础，原项目提交 `7be2abb`。扩展远程 AI 接入暂缓，原因是 optional host permission 与固定扩展 ID 仍需用户决策。
+- 2026-10-25：按用户要求将 AI 配置放入插件设置；完成 Provider、模型、API key、本地存储、optional host permission 请求和连接测试。Worker 仍不是插件运行前提，原项目 CORS 提交 `7be2abb` 保留为可选代理基础。

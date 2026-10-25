@@ -11,6 +11,7 @@ export default defineConfig({
         sidepanel: resolve(process.cwd(), 'index.html'),
         training: resolve(process.cwd(), 'training.html'),
         print: resolve(process.cwd(), 'print.html'),
+        settings: resolve(process.cwd(), 'settings.html'),
         background: resolve(process.cwd(), 'src/background.ts'),
       },
       output: {

@@ -1,4 +1,5 @@
 import type {
+  AiSettings,
   CaptureRecord,
   ErrorCode,
   ExtensionError,
@@ -7,6 +8,7 @@ import type {
   SavedArticle,
   StorageState,
 } from './types'
+import { providerById, normalizeAiSettings } from './ai/providers'
 import {
   readSavedArticles,
   removeSavedArticle,
@@ -19,6 +21,7 @@ import {
   startTrainingSession,
   submitTrainingAnswer,
 } from './storage/training'
+import { readAiSettings, writeAiSettings } from './storage/ai'
 
 const TRAINING_PAGE = 'training.html'
 
@@ -52,6 +55,7 @@ async function getStoredState(): Promise<StorageState> {
     'pendingCapture',
     'savedArticles',
     'trainingSessions',
+    'aiSettings',
     'lastTrainingTabId',
     'lastPrintTabId',
   ]) as Promise<StorageState>
@@ -136,6 +140,15 @@ async function openTrainingPage(
   }
 }
 
+async function openSettingsPage(): Promise<ExtensionResponse<{ tabId: number | undefined }>> {
+  try {
+    const tab = await chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') })
+    return success({ tabId: tab.id })
+  } catch {
+    return createError('EXTRACTION_FAILED', '无法打开插件设置页面。')
+  }
+}
+
 async function captureAndOpen(
   source: CaptureRecord['source'],
 ): Promise<ExtensionResponse<{ captureId: string }>> {
@@ -177,6 +190,39 @@ async function saveArticle(
   }
 }
 
+async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse<{ provider: string; model: string }>> {
+  const normalized = normalizeAiSettings(settings)
+  if (!normalized.apiKey) {
+    return createError('AI_NOT_CONFIGURED', '请先填写 API key。')
+  }
+  const provider = providerById(normalized.provider)
+  const hasPermission = await chrome.permissions.contains({ origins: [provider.hostPattern] })
+  if (!hasPermission) {
+    return createError('AI_PERMISSION_REQUIRED', '请先在设置页允许该模型服务的网络权限。')
+  }
+  try {
+    const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${normalized.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: normalized.model,
+        messages: [{ role: 'user', content: '只回复 OK。' }],
+        temperature: 0,
+        max_tokens: 1,
+      }),
+    })
+    if (!response.ok) {
+      return createError('AI_CONNECTION_FAILED', `连接失败（HTTP ${response.status}）。请检查 API key 和模型名称。`)
+    }
+    return success({ provider: provider.label, model: normalized.model })
+  } catch {
+    return createError('AI_CONNECTION_FAILED', '无法连接模型服务，请检查网络后重试。')
+  }
+}
+
 async function handleMessage(
   message: ExtensionMessage,
 ): Promise<ExtensionResponse<unknown>> {
@@ -185,6 +231,8 @@ async function handleMessage(
       return captureAndOpen(message.source)
     case 'open-training-page':
       return openTrainingPage()
+    case 'open-settings':
+      return openSettingsPage()
     case 'get-pending-capture': {
       const state = await getStoredState()
       return success(state.pendingCapture ?? null)
@@ -234,6 +282,15 @@ async function handleMessage(
     case 'reset-training-session':
       await removeTrainingSession(message.articleId)
       return success(null)
+    case 'get-ai-settings':
+      return success(await readAiSettings())
+    case 'save-ai-settings': {
+      const settings = normalizeAiSettings(message.settings)
+      await writeAiSettings(settings)
+      return success(settings)
+    }
+    case 'test-ai-connection':
+      return testAiConnection(message.settings)
     case 'save-article':
       return saveArticle(message.article)
     default:

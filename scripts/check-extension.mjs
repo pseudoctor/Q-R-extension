@@ -15,6 +15,7 @@ const requiredFiles = [
   manifest.side_panel?.default_path,
   'training.html',
   'print.html',
+  'settings.html',
 ]
 
 for (const file of requiredFiles) {

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   CaptureRecord,
+  AiSettings,
   ExtensionError,
   ExtensionMessage,
   ExtensionResponse,
   SavedArticle,
   TrainingSession,
 } from './types'
+import { AI_PROVIDERS, defaultAiSettings, providerById } from './ai/providers'
 import { articleToJson } from './export/json'
 import { articleToMarkdown } from './export/markdown'
 import { LESSON_STEPS } from './training/lessons'
@@ -38,8 +40,10 @@ function errorMessage(error: ExtensionError) {
 function App() {
   const isTrainingPage = window.location.pathname.endsWith('training.html')
   const isPrintPage = window.location.pathname.endsWith('print.html')
+  const isSettingsPage = window.location.pathname.endsWith('settings.html')
 
   if (isPrintPage) return <PrintPage />
+  if (isSettingsPage) return <SettingsPage />
   return isTrainingPage ? <TrainingPage /> : <SidePanel />
 }
 
@@ -155,7 +159,10 @@ function SidePanel() {
           <span className="eyebrow">TOULMIN READER</span>
           <h1>问读</h1>
         </div>
-        <span className="status-dot" aria-label="本地模式" />
+        <div className="header-actions">
+          <button className="icon-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })} aria-label="打开 AI 设置" title="AI 设置">⚙</button>
+          <span className="status-dot" aria-label="本地模式" />
+        </div>
       </header>
 
       <section className="intro-card">
@@ -223,6 +230,127 @@ function SidePanel() {
       </section>
 
       <footer className="panel-footer">正文只保存在此浏览器的插件存储中。</footer>
+    </main>
+  )
+}
+
+function SettingsPage() {
+  const [settings, setSettings] = useState<AiSettings>(defaultAiSettings())
+  const [loaded, setLoaded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [status, setStatus] = useState('')
+  const [permissionStatus, setPermissionStatus] = useState('')
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }).then((response) => {
+        setLoaded(true)
+        if (response.ok) setSettings(response.data)
+        else setStatus(errorMessage(response.error))
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  const provider = providerById(settings.provider)
+
+  const ensurePermission = async () => {
+    if (!extensionAvailable || !chrome.permissions) return false
+    const origins = [provider.hostPattern]
+    const alreadyGranted = await chrome.permissions.contains({ origins })
+    if (alreadyGranted) return true
+    setPermissionStatus(`需要允许访问 ${provider.baseUrl} 才能测试或调用该模型。`)
+    const granted = await chrome.permissions.request({ origins })
+    if (!granted) {
+      setPermissionStatus('未获得模型服务网络权限，配置仍会保存，但 AI 请求不会发送。')
+    } else {
+      setPermissionStatus('模型服务网络权限已允许。')
+    }
+    return granted
+  }
+
+  const saveSettings = async () => {
+    setBusy(true)
+    setStatus('')
+    if (settings.apiKey.trim()) await ensurePermission()
+    const response = await sendExtensionMessage<AiSettings>({
+      type: 'save-ai-settings',
+      settings: { ...settings, apiKey: settings.apiKey.trim() },
+    })
+    setBusy(false)
+    setStatus(response.ok ? '已保存到插件本地存储。API key 不会写入文章或日志。' : errorMessage(response.error))
+  }
+
+  const testConnection = async () => {
+    setTesting(true)
+    setStatus('')
+    const granted = await ensurePermission()
+    if (!granted) {
+      setTesting(false)
+      return
+    }
+    const response = await sendExtensionMessage<{ provider: string; model: string }>({
+      type: 'test-ai-connection',
+      settings,
+    })
+    setTesting(false)
+    setStatus(response.ok ? `连接成功：${response.data.provider} · ${response.data.model}` : errorMessage(response.error))
+  }
+
+  const selectProvider = (providerId: AiSettings['provider']) => {
+    const nextProvider = providerById(providerId)
+    setSettings((current) => ({ ...current, provider: providerId, model: nextProvider.defaultModel }))
+    setPermissionStatus('')
+    setStatus('')
+  }
+
+  return (
+    <main className="app-shell settings-shell">
+      <header className="settings-header">
+        <div>
+          <span className="eyebrow">PLUGIN SETTINGS</span>
+          <h1>连接你的 AI 模型</h1>
+          <p>配置只保存在当前浏览器的插件存储中，不需要 Worker 才能使用本地阅读训练。</p>
+        </div>
+        <span className="local-pill">LOCAL ONLY</span>
+      </header>
+      {!loaded ? (
+        <div className="loading-state">正在加载设置…</div>
+      ) : (
+        <section className="settings-card">
+          <label>
+            模型服务
+            <select value={settings.provider} onChange={(event) => selectProvider(event.target.value as AiSettings['provider'])}>
+              {AI_PROVIDERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            </select>
+          </label>
+          <label>
+            API endpoint
+            <input value={`${provider.baseUrl}/chat/completions`} readOnly aria-describedby="endpoint-note" />
+            <small id="endpoint-note">当前版本使用服务商的 OpenAI-compatible Chat Completions 接口。</small>
+          </label>
+          <label>
+            模型名称
+            <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} />
+          </label>
+          <label>
+            API key
+            <input type="password" autoComplete="off" value={settings.apiKey} onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))} placeholder="粘贴你的 API key" />
+            <small>只保存在本地插件存储；浏览器扩展存储不是加密保险箱，请不要在共享电脑上保存高权限密钥。</small>
+          </label>
+          <div className="settings-actions-row">
+            <button className="secondary-button" type="button" onClick={() => void testConnection()} disabled={busy || testing || !settings.apiKey.trim()}>
+              {testing ? '测试中…' : '测试连接'}
+            </button>
+            <button className="primary-button" type="button" onClick={() => void saveSettings()} disabled={busy || testing}>
+              {busy ? '保存中…' : '保存设置'}
+            </button>
+          </div>
+          {permissionStatus && <p className="status-message" role="status">{permissionStatus}</p>}
+          {status && <p className="status-message" role="status">{status}</p>}
+        </section>
+      )}
     </main>
   )
 }

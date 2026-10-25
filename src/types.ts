@@ -1,5 +1,13 @@
 export type CaptureSource = 'shortcut' | 'side-panel'
 
+export type AiProviderId = 'openai' | 'deepseek' | 'gemini' | 'qwen' | 'glm' | 'kimi'
+
+export type AiSettings = {
+  provider: AiProviderId
+  model: string
+  apiKey: string
+}
+
 export type CaptureRecord = {
   id: string
   title: string
@@ -49,6 +57,9 @@ export type ErrorCode =
   | 'EXTRACTION_FAILED'
   | 'STORAGE_FAILED'
   | 'INVALID_REQUEST'
+  | 'AI_NOT_CONFIGURED'
+  | 'AI_PERMISSION_REQUIRED'
+  | 'AI_CONNECTION_FAILED'
 
 export type ExtensionError = {
   code: ErrorCode
@@ -58,6 +69,7 @@ export type ExtensionError = {
 export type ExtensionMessage =
   | { type: 'capture-current-page'; source: CaptureSource }
   | { type: 'open-training-page' }
+  | { type: 'open-settings' }
   | { type: 'get-pending-capture' }
   | { type: 'clear-pending-capture' }
   | { type: 'get-saved-articles' }
@@ -69,6 +81,9 @@ export type ExtensionMessage =
   | { type: 'start-training-session'; articleId: string }
   | { type: 'submit-training-answer'; articleId: string; answer: string }
   | { type: 'reset-training-session'; articleId: string }
+  | { type: 'get-ai-settings' }
+  | { type: 'save-ai-settings'; settings: AiSettings }
+  | { type: 'test-ai-connection'; settings: AiSettings }
   | { type: 'save-article'; article: CaptureRecord }
 
 export type ExtensionResponse<T> =
@@ -79,6 +94,7 @@ export type StorageState = {
   pendingCapture?: CaptureRecord | null
   savedArticles?: SavedArticleStore | SavedArticle[]
   trainingSessions?: TrainingSessionStore | TrainingSession[]
+  aiSettings?: AiSettings
   lastTrainingTabId?: number
   lastPrintTabId?: number
 }
