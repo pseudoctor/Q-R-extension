@@ -1,0 +1,6 @@
+{
+  "extName": { "message": "문독 · 브라우저 동반자", "description": "확장 프로그램 이름" },
+  "extDescription": { "message": "웹페이지에서 글을 저장하고 툴민 읽기 훈련을 계속합니다.", "description": "확장 프로그램 설명" },
+  "actionTitle": { "message": "문독 열기", "description": "도구 모음 제목" },
+  "captureCommand": { "message": "현재 글을 가져와 문독 훈련 페이지 열기", "description": "가져오기 단축키 설명" }
+}

@@ -1,0 +1,6 @@
+{
+  "extName": { "message": "Toulmin Reader · Browser Companion", "description": "Extension name" },
+  "extDescription": { "message": "Save articles from webpages and continue Toulmin reading training.", "description": "Extension description" },
+  "actionTitle": { "message": "Open Toulmin Reader", "description": "Toolbar action title" },
+  "captureCommand": { "message": "Get the current article and open the Toulmin training page", "description": "Capture shortcut description" }
+}

@@ -1,6 +1,8 @@
 export type CaptureSource = 'shortcut' | 'side-panel'
 
-export type AiProviderId = 'openai' | 'deepseek' | 'gemini' | 'qwen' | 'glm' | 'kimi'
+export type Locale = 'zh-CN' | 'en' | 'ja' | 'ko'
+
+export type AiProviderId = 'openai' | 'deepseek' | 'gemini' | 'qwen' | 'glm' | 'kimi' | 'custom'
 
 export type AiDimensionId = 'fidelity' | 'claim' | 'cause' | 'structure'
 
@@ -23,6 +25,7 @@ export type AiSettings = {
   provider: AiProviderId
   model: string
   apiKey: string
+  endpoint: string
 }
 
 export type AiModelOption = {
@@ -125,6 +128,7 @@ export type ErrorCode =
   | 'INVALID_REQUEST'
   | 'AI_NOT_CONFIGURED'
   | 'AI_PERMISSION_REQUIRED'
+  | 'AI_INVALID_ENDPOINT'
   | 'AI_CONNECTION_FAILED'
   | 'AI_REQUEST_FAILED'
   | 'AI_INVALID_RESPONSE'
@@ -139,6 +143,8 @@ export type ExtensionMessage =
   | { type: 'open-training-page' }
   | { type: 'open-manual-paste-page' }
   | { type: 'open-settings' }
+  | { type: 'get-locale' }
+  | { type: 'save-locale'; locale: Locale }
   | { type: 'get-pending-capture' }
   | { type: 'get-pre-reading-prediction-draft' }
   | { type: 'save-pre-reading-prediction-draft'; articleId?: string; value: string }
@@ -173,6 +179,7 @@ export type StorageState = {
   savedArticles?: SavedArticleStore | SavedArticle[]
   trainingSessions?: TrainingSessionStore | TrainingSession[]
   aiSettings?: AiSettings
+  locale?: Locale
   lastTrainingTabId?: number
   lastPrintTabId?: number
 }

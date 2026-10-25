@@ -1,26 +1,27 @@
 import type {
   AiFeedback,
+  Locale,
   StorageState,
   TrainingSession,
   TrainingSessionStore,
 } from '../types'
-import { LESSON_STEPS } from '../training/lessons'
+import { getLessonSteps, LESSON_STEPS } from '../training/lessons'
 
 export const TRAINING_SESSIONS_KEY = 'trainingSessions'
 
-export function normalizeTrainingSessionStore(value: unknown): TrainingSessionStore {
+export function normalizeTrainingSessionStore(value: unknown, locale: Locale = 'zh-CN'): TrainingSessionStore {
   if (Array.isArray(value)) {
-    return { version: 1, items: value.filter(isTrainingSession).map(withQuestionDefault) }
+    return { version: 1, items: value.filter(isTrainingSession).map((session) => withQuestionDefault(session, locale)) }
   }
   if (isRecord(value) && value.version === 1 && Array.isArray(value.items)) {
-    return { version: 1, items: value.items.filter(isTrainingSession).map(withQuestionDefault) }
+    return { version: 1, items: value.items.filter(isTrainingSession).map((session) => withQuestionDefault(session, locale)) }
   }
   return { version: 1, items: [] }
 }
 
-export async function readTrainingSessions(): Promise<TrainingSession[]> {
+export async function readTrainingSessions(locale: Locale = 'zh-CN'): Promise<TrainingSession[]> {
   const stored = await chrome.storage.local.get(TRAINING_SESSIONS_KEY) as StorageState
-  return normalizeTrainingSessionStore(stored.trainingSessions).items
+  return normalizeTrainingSessionStore(stored.trainingSessions, locale).items
 }
 
 async function writeTrainingSessions(items: TrainingSession[]) {
@@ -28,30 +29,30 @@ async function writeTrainingSessions(items: TrainingSession[]) {
   await chrome.storage.local.set({ [TRAINING_SESSIONS_KEY]: store })
 }
 
-export async function getTrainingSession(articleId: string) {
-  return (await readTrainingSessions()).find((session) => session.articleId === articleId) ?? null
+export async function getTrainingSession(articleId: string, locale: Locale = 'zh-CN') {
+  return (await readTrainingSessions(locale)).find((session) => session.articleId === articleId) ?? null
 }
 
-export async function startTrainingSession(articleId: string) {
-  const existing = await getTrainingSession(articleId)
+export async function startTrainingSession(articleId: string, locale: Locale = 'zh-CN') {
+  const existing = await getTrainingSession(articleId, locale)
   if (existing) return existing
 
   const now = new Date().toISOString()
   const session: TrainingSession = {
     articleId,
     currentStep: 0,
-    currentQuestion: LESSON_STEPS[0].question,
+    currentQuestion: getLessonSteps(locale)[0].question,
     draft: '',
     turns: [],
     startedAt: now,
     updatedAt: now,
   }
-  await writeTrainingSessions([session, ...(await readTrainingSessions())])
+  await writeTrainingSessions([session, ...(await readTrainingSessions(locale))])
   return session
 }
 
-export async function saveTrainingDraft(articleId: string, answer: string) {
-  const session = await getTrainingSession(articleId)
+export async function saveTrainingDraft(articleId: string, answer: string, locale: Locale = 'zh-CN') {
+  const session = await getTrainingSession(articleId, locale)
   if (!session) return null
   if (answer.length > 4_000) {
     throw new Error('回答需要不超过 4,000 个字符。')
@@ -62,30 +63,30 @@ export async function saveTrainingDraft(articleId: string, answer: string) {
     draft: answer,
     updatedAt: new Date().toISOString(),
   }
-  const sessions = await readTrainingSessions()
+  const sessions = await readTrainingSessions(locale)
   await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
   return updated
 }
 
-export async function submitTrainingAnswer(articleId: string, answer: string) {
-  return saveTrainingDraft(articleId, answer)
+export async function submitTrainingAnswer(articleId: string, answer: string, locale: Locale = 'zh-CN') {
+  return saveTrainingDraft(articleId, answer, locale)
 }
 
-export async function setTrainingQuestion(articleId: string, question: string) {
-  const session = await getTrainingSession(articleId)
+export async function setTrainingQuestion(articleId: string, question: string, locale: Locale = 'zh-CN') {
+  const session = await getTrainingSession(articleId, locale)
   if (!session) return null
   const updated = {
     ...session,
     currentQuestion: question,
     updatedAt: new Date().toISOString(),
   }
-  const sessions = await readTrainingSessions()
+  const sessions = await readTrainingSessions(locale)
   await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
   return updated
 }
 
-export async function commitTrainingFeedback(articleId: string, feedback: AiFeedback) {
-  const session = await getTrainingSession(articleId)
+export async function commitTrainingFeedback(articleId: string, feedback: AiFeedback, locale: Locale = 'zh-CN') {
+  const session = await getTrainingSession(articleId, locale)
   if (!session) return null
   const legacyTurn = session.turns.at(-1)
   const hasLegacyPendingTurn = Boolean(legacyTurn && !legacyTurn.feedback && !session.draft.trim())
@@ -102,7 +103,7 @@ export async function commitTrainingFeedback(articleId: string, feedback: AiFeed
       draft: '',
       updatedAt: new Date().toISOString(),
     }
-    const sessions = await readTrainingSessions()
+    const sessions = await readTrainingSessions(locale)
     await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
     return updated
   }
@@ -128,13 +129,13 @@ export async function commitTrainingFeedback(articleId: string, feedback: AiFeed
     updatedAt: now,
     ...(nextStep === LESSON_STEPS.length ? { completedAt: now } : { completedAt: undefined }),
   }
-  const sessions = await readTrainingSessions()
+  const sessions = await readTrainingSessions(locale)
   await writeTrainingSessions(sessions.map((item) => item.articleId === articleId ? updated : item))
   return updated
 }
 
-export async function removeTrainingSession(articleId: string) {
-  const sessions = await readTrainingSessions()
+export async function removeTrainingSession(articleId: string, locale: Locale = 'zh-CN') {
+  const sessions = await readTrainingSessions(locale)
   await writeTrainingSessions(sessions.filter((session) => session.articleId !== articleId))
 }
 
@@ -159,10 +160,10 @@ function isTrainingSession(value: unknown): value is TrainingSession {
   )
 }
 
-function withQuestionDefault(session: TrainingSession): TrainingSession {
+function withQuestionDefault(session: TrainingSession, locale: Locale): TrainingSession {
   return {
     ...session,
-    currentQuestion: session.currentQuestion || LESSON_STEPS[session.currentStep]?.question || '',
+    currentQuestion: session.currentQuestion || getLessonSteps(locale)[session.currentStep]?.question || '',
     draft: session.draft || '',
   }
 }

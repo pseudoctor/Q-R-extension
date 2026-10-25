@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "问读 · 浏览器伴读",
+  "name": "__MSG_extName__",
   "version": "0.1.0",
-  "description": "从网页保存文章，并继续进行图尔敏阅读训练。",
+  "description": "__MSG_extDescription__",
+  "default_locale": "zh_CN",
   "action": {
-    "default_title": "打开问读伴读"
+    "default_title": "__MSG_actionTitle__"
   },
   "background": {
     "service_worker": "background.js",
@@ -19,17 +20,10 @@
     "sidePanel",
     "storage"
   ],
-  "host_permissions": [
-    "http://*/*",
-    "https://*/*"
-  ],
   "optional_host_permissions": [
-    "https://api.openai.com/*",
-    "https://api.deepseek.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://dashscope.aliyuncs.com/*",
-    "https://open.bigmodel.cn/*",
-    "https://api.moonshot.cn/*"
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "commands": {
     "capture-and-open": {
@@ -37,7 +31,7 @@
         "default": "Ctrl+Shift+8",
         "mac": "Command+Shift+8"
       },
-      "description": "获取当前文章并打开问读训练页"
+      "description": "__MSG_captureCommand__"
     }
   }
 }

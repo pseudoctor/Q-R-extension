@@ -1,4 +1,6 @@
 import type { AiDimensionId } from '../types'
+import type { Locale } from '../types'
+import { translate } from '../i18n/messages'
 
 export type LessonStep = {
   id: string
@@ -84,4 +86,15 @@ export const LESSON_STEPS: LessonStep[] = [
     dimensions: ['fidelity', 'claim', 'cause', 'structure'],
   },
 ]
+
+export function getLessonSteps(locale: Locale): LessonStep[] {
+  return LESSON_STEPS.map((step) => ({
+    ...step,
+    stage: translate(locale, `lesson.${step.id}.stage`),
+    name: translate(locale, `lesson.${step.id}.name`),
+    focus: translate(locale, `lesson.${step.id}.focus`),
+    instruction: translate(locale, `lesson.${step.id}.instruction`),
+    question: translate(locale, `lesson.${step.id}.question`),
+  }))
+}
 

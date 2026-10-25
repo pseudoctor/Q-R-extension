@@ -1,5 +1,6 @@
-import type { ArticleBlock, CaptureRecord, SavedArticle } from '../types'
+import type { ArticleBlock, CaptureRecord, Locale, SavedArticle } from '../types'
 import { getArticleBlocks } from '../articles/format'
+import { translate } from '../i18n/messages'
 
 export function articleBlocksToMarkdown(blocks: ArticleBlock[]) {
   return blocks.map((block) => {
@@ -16,8 +17,8 @@ export function articleBlocksToMarkdown(blocks: ArticleBlock[]) {
   }).filter(Boolean).join('\n\n')
 }
 
-export function articleToMarkdown(article: CaptureRecord | SavedArticle) {
-  const title = article.title.trim() || '未命名文章'
+export function articleToMarkdown(article: CaptureRecord | SavedArticle, locale: Locale = 'zh-CN') {
+  const title = article.title.trim() || translate(locale, 'common.untitled')
   const metadata = article.metadata ?? {
     subtitle: '',
     author: article.author?.trim() ?? '',
@@ -39,7 +40,7 @@ export function articleToMarkdown(article: CaptureRecord | SavedArticle) {
   ].join('\n')
 
   const prediction = article.preReadingPrediction?.trim()
-  return `${frontmatter}\n\n# ${title}\n\n${prediction ? `## 阅读前预测\n\n${escapeMarkdownBlock(prediction)}\n\n` : ''}${articleBlocksToMarkdown(getArticleBlocks(article.text, article.blocks))}\n`
+  return `${frontmatter}\n\n# ${title}\n\n${prediction ? `## ${translate(locale, 'export.prediction')}\n\n${escapeMarkdownBlock(prediction)}\n\n` : ''}${articleBlocksToMarkdown(getArticleBlocks(article.text, article.blocks))}\n`
 }
 
 function escapeMarkdownBlock(value: string) {

@@ -8,12 +8,20 @@ import type {
   ExtensionError,
   ExtensionMessage,
   ExtensionResponse,
+  ErrorCode,
   PreReadingPredictionDraft,
   SavedArticle,
   TrainingSession,
 } from './types'
 import { getArticleBlocks } from './articles/format'
-import { AI_PROVIDERS, defaultAiSettings, providerById } from './ai/providers'
+import {
+  AI_PROVIDERS,
+  defaultAiSettings,
+  isValidCustomEndpoint,
+  providerById,
+  providerEndpoint,
+  providerOriginPattern,
+} from './ai/providers'
 import {
   buildObsidianUrl,
   buildReadingExportModel,
@@ -22,7 +30,10 @@ import {
   generateReadingPdfHtml,
   sanitizeFilename,
 } from './export/reading'
-import { LESSON_STEPS } from './training/lessons'
+import { getLessonSteps, LESSON_STEPS } from './training/lessons'
+import { useI18n } from './i18n/context'
+import { detectLocale } from './i18n/types'
+import { translate } from './i18n/messages'
 import './App.css'
 
 const extensionAvailable =
@@ -36,7 +47,7 @@ async function sendExtensionMessage<T>(
       ok: false,
       error: {
         code: 'PAGE_NOT_ACCESSIBLE',
-        message: '请从 Chrome 或 Edge 的已加载扩展中打开此页面。',
+        message: translate(detectLocale(), 'common.pageAccessible'),
       },
     }
   }
@@ -59,13 +70,17 @@ function App() {
 }
 
 function SidePanel() {
+  const { t, locale } = useI18n()
   const [articles, setArticles] = useState<SavedArticle[]>([])
   const [sessions, setSessions] = useState<Record<string, TrainingSession>>({})
-  const [status, setStatus] = useState('准备从当前网页捕获文章。')
+  const [status, setStatusValue] = useState(() => ({ text: t('side.statusReady'), locale }))
   const [loading, setLoading] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [view, setView] = useState<'library' | 'growth'>('library')
   const [filter, setFilter] = useState<'all' | 'favorite' | 'in-progress' | 'completed'>('all')
+
+  const setStatus = (text: string) => setStatusValue({ text, locale })
+  const statusText = status.locale === locale ? status.text : t('side.statusReady')
 
   const loadArticles = useCallback(async () => {
     const response = await sendExtensionMessage<SavedArticle[]>({
@@ -138,14 +153,14 @@ function SidePanel() {
 
   const captureCurrentPage = async () => {
     setLoading(true)
-    setStatus('正在读取当前网页…')
+    setStatus(t('side.statusReading'))
     const response = await sendExtensionMessage<{ captureId: string }>({
       type: 'capture-current-page',
       source: 'side-panel',
     })
     setLoading(false)
     if (response.ok) {
-      setStatus('文章已填入训练页，可以先检查正文再保存。')
+      setStatus(t('side.statusCaptured'))
       return
     }
     setStatus(errorMessage(response.error))
@@ -155,7 +170,7 @@ function SidePanel() {
     const response = await sendExtensionMessage<{ tabId: number | undefined }>({
       type: 'open-manual-paste-page',
     })
-    setStatus(response.ok ? '已打开手动粘贴页面。' : errorMessage(response.error))
+    setStatus(response.ok ? t('side.statusManualOpened') : errorMessage(response.error))
   }
 
   const openSavedArticle = async (articleId: string) => {
@@ -163,17 +178,17 @@ function SidePanel() {
       type: 'open-saved-article',
       articleId,
     })
-    setStatus(response.ok ? '已打开本地文章。' : errorMessage(response.error))
+    setStatus(response.ok ? t('side.statusArticleOpened') : errorMessage(response.error))
   }
 
   const deleteArticle = async (articleId: string) => {
-    if (!window.confirm('删除这篇本地文章？此操作无法撤销。')) return
+    if (!window.confirm(t('side.confirmDelete'))) return
     const response = await sendExtensionMessage<{ articleId: string }>({
       type: 'delete-article',
       articleId,
     })
     if (response.ok) {
-      setStatus('文章已删除。')
+      setStatus(t('side.statusDeleted'))
       await loadArticles()
       return
     }
@@ -193,30 +208,30 @@ function SidePanel() {
   }
 
   const exportArticle = async (article: SavedArticle, format: 'markdown' | 'json' | 'obsidian') => {
-    const model = buildReadingExportModel(article, sessions[article.id])
+    const model = buildReadingExportModel(article, sessions[article.id], locale)
     if (format === 'obsidian') {
       const markdown = generateReadingMarkdown(model)
       const obsidian = buildObsidianUrl(markdown, { title: article.title })
       if (obsidian.useClipboard) {
         if (!navigator.clipboard?.writeText) {
-          setStatus('内容较长且浏览器不支持剪贴板，请改用 Markdown 导出。')
+          setStatus(t('side.exportClipboardTooLong'))
           return
         }
         try {
           await navigator.clipboard.writeText(markdown)
         } catch {
-          setStatus('无法写入剪贴板，请改用 Markdown 导出。')
+          setStatus(t('side.exportClipboardFailed'))
           return
         }
       }
       window.open(obsidian.url, '_blank', 'noopener,noreferrer')
-      setStatus(obsidian.useClipboard ? '内容已复制，Obsidian 将从剪贴板创建笔记。' : '已请求 Obsidian 创建完整训练记录。')
+      setStatus(obsidian.useClipboard ? t('side.exportObsidianCopied') : t('side.exportObsidianRequested'))
       return
     }
     const content = format === 'markdown' ? generateReadingMarkdown(model) : generateReadingJson(model)
     const extension = format === 'markdown' ? 'md' : 'json'
-    downloadText(content, sanitizeFilename(article.title, extension), format === 'markdown' ? 'text/markdown' : 'application/json')
-    setStatus(`已导出完整 ${format === 'markdown' ? 'Markdown' : 'JSON'} 记录。`)
+    downloadText(content, sanitizeFilename(article.title, extension, locale), format === 'markdown' ? 'text/markdown' : 'application/json')
+    setStatus(t('side.exportSuccess', { format: format === 'markdown' ? 'Markdown' : 'JSON' }))
   }
 
   const printArticle = async (articleId: string) => {
@@ -224,7 +239,7 @@ function SidePanel() {
       type: 'open-print-article',
       articleId,
     })
-    setStatus(response.ok ? '已打开打印页，可选择“保存为 PDF”。' : errorMessage(response.error))
+    setStatus(response.ok ? t('side.printOpened') : errorMessage(response.error))
   }
 
   return (
@@ -232,57 +247,57 @@ function SidePanel() {
       <header className="brand-header">
         <div>
           <span className="eyebrow">TOULMIN READER</span>
-          <h1>问读</h1>
+          <h1>{t('common.productName')}</h1>
         </div>
         <div className="header-actions">
-          <button className="icon-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })} aria-label="打开 AI 设置" title="AI 设置">⚙</button>
-          <span className="status-dot" aria-label="本地模式" />
+          <button className="icon-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })} aria-label={t('side.settingsAria')} title={t('side.settingsTitle')}>⚙</button>
+          <span className="status-dot" aria-label={t('side.localAria')} />
         </div>
       </header>
 
       <section className="intro-card">
-        <span className="section-kicker">CURRENT PAGE</span>
-        <h2>把正在读的文章带进训练页</h2>
-        <p>快捷键：Ctrl/⌘ + Shift + 8。也可以直接点击下面的按钮。</p>
+        <span className="section-kicker">{t('side.currentPage')}</span>
+        <h2>{t('side.captureHeading')}</h2>
+        <p>{t('side.shortcutHint')}</p>
         <button className="primary-button full-width" type="button" onClick={captureCurrentPage} disabled={loading}>
-          {loading ? '正在读取…' : '获取当前文章'}
+          {loading ? t('side.capturing') : t('side.capture')}
         </button>
         <button className="text-button full-width" type="button" onClick={openManualPastePage}>
-          手动粘贴文章
+          {t('side.manualPaste')}
         </button>
-        <p className="status-message" role="status">{status}</p>
+        <p className="status-message" role="status">{statusText}</p>
       </section>
 
       <details className="quick-start">
-        <summary>第一次使用？查看快速开始</summary>
+        <summary>{t('side.quickStart')}</summary>
         <ol>
           <li>
-            <strong>配置 AI</strong>
-            <span>点击右上角设置，填写服务商、API endpoint、模型名称和 API key，并测试连接。</span>
+            <strong>{t('side.quick.configTitle')}</strong>
+            <span>{t('side.quick.configBody')}</span>
           </li>
           <li>
-            <strong>获取文章</strong>
-            <span>打开文章页面后，按 Ctrl/⌘ + Shift + 8，或点击“获取当前文章”。</span>
+            <strong>{t('side.quick.captureTitle')}</strong>
+            <span>{t('side.quick.captureBody')}</span>
           </li>
           <li>
-            <strong>读取失败时手动粘贴</strong>
-            <span>如果网页不允许插件读取，点击“手动粘贴文章”，再填写标题和正文。</span>
+            <strong>{t('side.quick.pasteTitle')}</strong>
+            <span>{t('side.quick.pasteBody')}</span>
           </li>
           <li>
-            <strong>检查并预测</strong>
-            <span>检查正文和段落，再根据标题、来源和已有信息填写阅读前预测。预测会自动保存。</span>
+            <strong>{t('side.quick.predictTitle')}</strong>
+            <span>{t('side.quick.predictBody')}</span>
           </li>
           <li>
-            <strong>保存并开始训练</strong>
-            <span>确认内容无误后，点击“保存并开始训练”。</span>
+            <strong>{t('side.quick.saveTitle')}</strong>
+            <span>{t('side.quick.saveBody')}</span>
           </li>
           <li>
-            <strong>完成 AI 训练</strong>
-            <span>先确认已经读完文章，随后 AI 会逐轮出题并对你的回答进行评分和反馈。</span>
+            <strong>{t('side.quick.trainTitle')}</strong>
+            <span>{t('side.quick.trainBody')}</span>
           </li>
           <li>
-            <strong>导出记录</strong>
-            <span>训练完成后，可以导出 Markdown、Obsidian、JSON，或打开打印页保存为 PDF。</span>
+            <strong>{t('side.quick.exportTitle')}</strong>
+            <span>{t('side.quick.exportBody')}</span>
           </li>
         </ol>
       </details>
@@ -291,12 +306,12 @@ function SidePanel() {
         <div className="section-heading">
           <div>
             <span className="section-kicker">LOCAL LIBRARY</span>
-            <h2>{view === 'library' ? '文章架' : '成长记录'}</h2>
+            <h2>{view === 'library' ? t('side.library') : t('side.growth')}</h2>
           </div>
           <div className="section-heading-actions">
-            <button className={view === 'library' ? 'text-button active' : 'text-button'} type="button" onClick={() => setView('library')}>文章架</button>
-            <button className={view === 'growth' ? 'text-button active' : 'text-button'} type="button" onClick={() => setView('growth')}>成长记录</button>
-            <button className="icon-button" type="button" onClick={() => void loadArticles()} aria-label="刷新文章列表">↻</button>
+            <button className={view === 'library' ? 'text-button active' : 'text-button'} type="button" onClick={() => setView('library')}>{t('side.library')}</button>
+            <button className={view === 'growth' ? 'text-button active' : 'text-button'} type="button" onClick={() => setView('growth')}>{t('side.growth')}</button>
+            <button className="icon-button" type="button" onClick={() => void loadArticles()} aria-label={t('side.refreshArticles')}>↻</button>
           </div>
         </div>
         {view === 'library' ? (
@@ -305,15 +320,15 @@ function SidePanel() {
               className="search-input"
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="搜索标题、作者或正文…"
-              aria-label="搜索本地文章"
+              placeholder={t('side.searchPlaceholder')}
+              aria-label={t('side.searchAria')}
             />
-            <div className="library-filters" role="group" aria-label="文章筛选">
+            <div className="library-filters" role="group" aria-label={t('side.filterAria')}>
               {([
-                ['all', '全部'],
-                ['favorite', '收藏'],
-                ['in-progress', '进行中'],
-                ['completed', '已完成'],
+                ['all', t('side.all')],
+                ['favorite', t('side.favorite')],
+                ['in-progress', t('side.inProgress')],
+                ['completed', t('side.completed')],
               ] as const).map(([value, label]) => (
                 <button key={value} className={filter === value ? 'filter-button active' : 'filter-button'} type="button" onClick={() => setFilter(value)}>{label}</button>
               ))}
@@ -321,17 +336,17 @@ function SidePanel() {
             {articles.length === 0 ? (
               <div className="empty-state">
                 <span className="empty-mark">○</span>
-                <p>保存后的文章会出现在这里。</p>
+                <p>{t('side.savedEmpty')}</p>
               </div>
             ) : filteredArticles.length === 0 ? (
               <div className="empty-state compact-empty">
-                <p>没有匹配的文章。</p>
+                <p>{t('side.noMatch')}</p>
               </div>
             ) : (
               <ul className="article-list">
                 {filteredArticles.slice(0, 8).map((article) => {
                   const session = sessions[article.id]
-                  const progress = session ? `${Math.min(session.currentStep, LESSON_STEPS.length)}/${LESSON_STEPS.length}` : '未开始'
+                  const progress = session ? `${Math.min(session.currentStep, LESSON_STEPS.length)}/${LESSON_STEPS.length}` : t('common.notStarted')
                   const average = session?.turns.length
                     ? session.turns.reduce((sum, turn) => sum + (turn.feedback?.total ?? 0), 0) / session.turns.length
                     : null
@@ -340,15 +355,15 @@ function SidePanel() {
                       <div className="article-list-item">
                         <button className="article-open-button" type="button" onClick={() => void openSavedArticle(article.id)}>
                           <strong>{article.isFavorite ? '★ ' : ''}{article.title}</strong>
-                          <span>{formatDate(article.savedAt)} · {article.text.length.toLocaleString()} 字符 · 训练 {progress}{average === null ? '' : ` · ${average.toFixed(1)} 分`}</span>
+                          <span>{formatDate(article.savedAt, locale)} · {article.text.length.toLocaleString()} {t('common.characters')} · {t('common.training')} {progress}{average === null ? '' : ` · ${average.toFixed(1)} ${t('common.score')}`}</span>
                         </button>
                         <div className="article-actions">
-                          <button type="button" onClick={() => void toggleFavorite(article.id)} aria-label={article.isFavorite ? '取消收藏' : '收藏'}>{article.isFavorite ? '★' : '☆'}</button>
-                          <button type="button" onClick={() => void exportArticle(article, 'markdown')} aria-label="导出完整 Markdown">MD</button>
-                          <button type="button" onClick={() => void exportArticle(article, 'json')} aria-label="导出完整 JSON">JSON</button>
-                          <button type="button" onClick={() => void exportArticle(article, 'obsidian')} aria-label="导出到 Obsidian">OB</button>
-                          <button type="button" onClick={() => void printArticle(article.id)} aria-label="打印或保存为 PDF">PDF</button>
-                          <button type="button" onClick={() => void deleteArticle(article.id)} aria-label="删除文章">×</button>
+                          <button type="button" onClick={() => void toggleFavorite(article.id)} aria-label={article.isFavorite ? t('side.cancelFavorite') : t('side.addFavorite')}>{article.isFavorite ? '★' : '☆'}</button>
+                          <button type="button" onClick={() => void exportArticle(article, 'markdown')} aria-label={t('side.exportMarkdown')}>MD</button>
+                          <button type="button" onClick={() => void exportArticle(article, 'json')} aria-label={t('side.exportJson')}>JSON</button>
+                          <button type="button" onClick={() => void exportArticle(article, 'obsidian')} aria-label={t('side.exportObsidian')}>OB</button>
+                          <button type="button" onClick={() => void printArticle(article.id)} aria-label={t('side.printPdf')}>PDF</button>
+                          <button type="button" onClick={() => void deleteArticle(article.id)} aria-label={t('side.deleteArticle')}>×</button>
                         </div>
                       </div>
                     </li>
@@ -360,32 +375,33 @@ function SidePanel() {
         ) : (
           <div className="growth-panel">
             <div className="growth-stats">
-              <div><strong>{growthStats.articleCount}</strong><span>保存文章</span></div>
-              <div><strong>{growthStats.completedCount}</strong><span>完成训练</span></div>
-              <div><strong>{growthStats.turnCount}</strong><span>评分回合</span></div>
-              <div><strong>{growthStats.average === null ? '—' : growthStats.average.toFixed(1)}</strong><span>平均得分</span></div>
+              <div><strong>{growthStats.articleCount}</strong><span>{t('side.savedArticles')}</span></div>
+              <div><strong>{growthStats.completedCount}</strong><span>{t('side.completedTraining')}</span></div>
+              <div><strong>{growthStats.turnCount}</strong><span>{t('side.scoredRounds')}</span></div>
+              <div><strong>{growthStats.average === null ? '—' : growthStats.average.toFixed(1)}</strong><span>{t('side.averageScore')}</span></div>
             </div>
             <div className="growth-dimensions">
-              <h3>四项能力</h3>
+              <h3>{t('side.fourSkills')}</h3>
               {growthStats.dimensions.map(({ dimension, average }) => (
                 <div className="dimension-row" key={dimension}>
-                  <span>{dimension === 'fidelity' ? '忠实度' : dimension === 'claim' ? '主张' : dimension === 'cause' ? '因果' : '结构'}</span>
+                  <span>{t(`side.dimension.${dimension}`)}</span>
                   <div className="dimension-track"><i style={{ width: `${Math.min(100, ((average ?? 0) / 10) * 100)}%` }} /></div>
                   <strong>{average === null ? '—' : average.toFixed(1)}</strong>
                 </div>
               ))}
             </div>
-            <p className="muted-copy">每次 AI 评分都会沉淀到本地成长记录，文章和训练答案不会上传到插件之外的存储。</p>
+            <p className="muted-copy">{t('side.growthCopy')}</p>
           </div>
         )}
       </section>
 
-      <footer className="panel-footer">正文只保存在此浏览器的插件存储中。</footer>
+      <footer className="panel-footer">{t('side.storageFooter')}</footer>
     </main>
   )
 }
 
 function SettingsPage() {
+  const { t, locale, localeOptions, setLocale } = useI18n()
   const [settings, setSettings] = useState<AiSettings>(defaultAiSettings())
   const [modelOptions, setModelOptions] = useState<AiModelOption[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -412,23 +428,31 @@ function SettingsPage() {
 
   const provider = providerById(settings.provider)
 
-  async function ensurePermission(providerId: AiSettings['provider'] = settings.provider) {
+  async function ensurePermission(settingsOverride: AiSettings = settings) {
     if (!extensionAvailable || !chrome.permissions) return false
-    const selectedProvider = providerById(providerId)
-    const origins = [selectedProvider.hostPattern]
+    const origin = providerOriginPattern(settingsOverride)
+    if (!origin) {
+      setPermissionStatus(t('settings.invalidEndpoint'))
+      return false
+    }
+    const origins = [origin]
     const alreadyGranted = await chrome.permissions.contains({ origins })
     if (alreadyGranted) return true
-    setPermissionStatus(`需要允许访问 ${selectedProvider.baseUrl} 才能测试或调用该模型。`)
+    setPermissionStatus(t('settings.permissionRequired', { url: providerEndpoint(settingsOverride) }))
     const granted = await chrome.permissions.request({ origins })
     if (!granted) {
-      setPermissionStatus('未获得模型服务网络权限，配置仍会保存，但 AI 请求不会发送。')
+      setPermissionStatus(t('settings.permissionDenied'))
     } else {
-      setPermissionStatus('模型服务网络权限已允许。')
+      setPermissionStatus(t('settings.permissionGranted'))
     }
     return granted
   }
 
   const saveSettings = async () => {
+    if (settings.provider === 'custom' && !isValidCustomEndpoint(settings.endpoint)) {
+      setStatus(t('settings.invalidEndpoint'))
+      return
+    }
     setBusy(true)
     setStatus('')
     if (settings.apiKey.trim()) await ensurePermission()
@@ -438,14 +462,14 @@ function SettingsPage() {
       settings: savedSettings,
     })
     setBusy(false)
-    setStatus(response.ok ? '已保存到插件本地存储。API key 不会写入文章或日志。' : errorMessage(response.error))
+    setStatus(response.ok ? t('settings.saved') : errorMessage(response.error))
     if (response.ok) void refreshModels(savedSettings, false)
   }
 
   const testConnection = async () => {
     setTesting(true)
     setStatus('')
-    const granted = await ensurePermission()
+    const granted = await ensurePermission(settings)
     if (!granted) {
       setTesting(false)
       return
@@ -460,7 +484,7 @@ function SettingsPage() {
       return
     }
     await refreshModels(settings, false)
-    setStatus(`连接成功：${response.data.provider} · ${response.data.model}`)
+    setStatus(t('settings.connected', { provider: response.data.provider, model: response.data.model }))
   }
 
   const selectProvider = (providerId: AiSettings['provider']) => {
@@ -479,13 +503,13 @@ function SettingsPage() {
     setModelsLoading(true)
     setStatus('')
     setModelStatus('')
-    const selectedProvider = providerById(settingsOverride.provider)
     let granted = false
     if (requestPermission) {
-      granted = await ensurePermission(settingsOverride.provider)
+      granted = await ensurePermission(settingsOverride)
     } else {
       try {
-        granted = await chrome.permissions.contains({ origins: [selectedProvider.hostPattern] })
+        const origin = providerOriginPattern(settingsOverride)
+        granted = Boolean(origin) && await chrome.permissions.contains({ origins: [origin] })
       } catch {
         granted = false
       }
@@ -506,61 +530,74 @@ function SettingsPage() {
     }
     setModelOptions(response.data.models)
     setModelSource(response.data.source)
-    setModelStatus(response.data.warning ?? `已获取 ${response.data.models.length} 个可用模型。`)
+    setModelStatus(response.data.warning ?? t('settings.loadedModels', { count: response.data.models.length }))
   }
 
   return (
     <main className="app-shell settings-shell">
       <header className="settings-header">
         <div>
-          <span className="eyebrow">PLUGIN SETTINGS</span>
-          <h1>连接你的 AI 模型</h1>
-          <p>配置只保存在当前浏览器的插件存储中，不需要 Worker 才能使用本地阅读训练。</p>
+          <span className="eyebrow">{t('settings.eyebrow')}</span>
+          <h1>{t('settings.heading')}</h1>
+          <p>{t('settings.description')}</p>
         </div>
-        <span className="local-pill">LOCAL ONLY</span>
+        <span className="local-pill">{t('common.localOnly')}</span>
       </header>
       {!loaded ? (
-        <div className="loading-state">正在加载设置…</div>
+        <div className="loading-state">{t('settings.loading')}</div>
       ) : (
         <>
           <section className="settings-card">
           <label>
-            模型服务
+            {t('settings.language')}
+            <select value={locale} onChange={(event) => void setLocale(event.target.value as typeof locale)}>
+              {localeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <small>{t('settings.languageHint')}</small>
+          </label>
+          <label>
+            {t('settings.modelService')}
             <select value={settings.provider} onChange={(event) => selectProvider(event.target.value as AiSettings['provider'])}>
-              {AI_PROVIDERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              {AI_PROVIDERS.map((item) => <option key={item.id} value={item.id}>{t(`provider.${item.id}`)}</option>)}
             </select>
           </label>
           <label>
-            API endpoint
-            <input value={`${provider.baseUrl}/chat/completions`} readOnly aria-describedby="endpoint-note" />
-            <small id="endpoint-note">当前版本使用服务商的 OpenAI-compatible Chat Completions 接口。</small>
+            {t('settings.apiEndpoint')}
+            <input
+              value={provider.id === 'custom' ? settings.endpoint : providerEndpoint(settings)}
+              readOnly={provider.id !== 'custom'}
+              onChange={provider.id === 'custom' ? (event) => setSettings((current) => ({ ...current, endpoint: event.target.value })) : undefined}
+              placeholder={provider.id === 'custom' ? t('settings.customEndpointPlaceholder') : undefined}
+              aria-describedby="endpoint-note"
+            />
+            <small id="endpoint-note">{provider.id === 'custom' ? t('settings.customEndpointNote') : t('settings.endpointNote')}</small>
           </label>
           <label>
-            模型名称
+            {t('settings.modelName')}
             <div className="model-input-stack">
-              <select className="model-options-select" aria-label="服务商模型列表" value={modelOptions.some((model) => model.id === settings.model) ? settings.model : ''} onChange={(event) => { if (event.target.value) setSettings((current) => ({ ...current, model: event.target.value })) }}>
-                <option value="">{modelOptions.length ? `从已加载的 ${modelOptions.length} 个模型中选择` : '点击刷新获取服务商模型'}</option>
+              <select className="model-options-select" aria-label={t('settings.modelListAria')} value={modelOptions.some((model) => model.id === settings.model) ? settings.model : ''} onChange={(event) => { if (event.target.value) setSettings((current) => ({ ...current, model: event.target.value })) }}>
+                <option value="">{modelOptions.length ? t('settings.selectLoaded', { count: modelOptions.length }) : t('settings.refreshHint')}</option>
                 {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label === model.id ? model.id : `${model.label} · ${model.id}`}</option>)}
               </select>
               <div className="model-input-row">
-              <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} aria-label="手动输入模型名称" />
-              <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels()} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? '获取中…' : '刷新模型'}</button>
+              <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} aria-label={t('settings.manualModelAria')} />
+              <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels()} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? t('settings.fetchingModels') : t('settings.refreshModels')}</button>
               </div>
             </div>
-            <small>{modelSource === 'fallback' ? '服务商列表获取失败，当前仅显示默认模型；请根据下方提示修正后重新刷新。' : modelOptions.length ? `已加载 ${modelOptions.length} 个服务商模型；上方列表显示全部结果，也可以手动输入兼容模型名。` : '可刷新服务商模型列表，也可以手动输入兼容模型名。'}</small>
+            <small>{modelSource === 'fallback' ? t('settings.fallbackHint') : modelOptions.length ? t('settings.loadedModels', { count: modelOptions.length }) : t('settings.modelHint')}</small>
             {modelStatus && <small className="model-status" role="status">{modelStatus}</small>}
           </label>
           <label>
-            API key
-            <input type="password" autoComplete="off" value={settings.apiKey} onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))} placeholder="粘贴你的 API key" />
-            <small>只保存在本地插件存储；浏览器扩展存储不是加密保险箱，请不要在共享电脑上保存高权限密钥。</small>
+            {t('settings.apiKey')}
+            <input type="password" autoComplete="off" value={settings.apiKey} onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))} placeholder={t('settings.apiKeyPlaceholder')} />
+            <small>{t('settings.apiKeyNote')}</small>
           </label>
           <div className="settings-actions-row">
             <button className="secondary-button" type="button" onClick={() => void testConnection()} disabled={busy || testing || !settings.apiKey.trim()}>
-              {testing ? '测试中…' : '测试连接'}
+              {testing ? t('settings.testing') : t('settings.testConnection')}
             </button>
             <button className="primary-button" type="button" onClick={() => void saveSettings()} disabled={busy || testing}>
-              {busy ? '保存中…' : '保存设置'}
+              {busy ? t('settings.saving') : t('settings.save')}
             </button>
           </div>
           {permissionStatus && <p className="status-message" role="status">{permissionStatus}</p>}
@@ -568,17 +605,17 @@ function SettingsPage() {
           </section>
           <section className="donation-card" aria-labelledby="donation-title">
           <div>
-            <span className="section-kicker">SUPPORT THE PROJECT</span>
-            <h2 id="donation-title">如果问读对你有帮助</h2>
-            <p>可以请作者喝杯咖啡，感谢你的支持。</p>
+            <span className="section-kicker">{t('settings.supportEyebrow')}</span>
+            <h2 id="donation-title">{t('settings.supportHeading')}</h2>
+            <p>{t('settings.supportCopy')}</p>
           </div>
           <div className="donation-grid">
             <figure>
-              <img src="/assets/donate-alipay.jpg" alt="支付宝打赏二维码" />
-              <figcaption>支付宝</figcaption>
+              <img src="/assets/donate-alipay.jpg" alt={t('settings.alipayAlt')} />
+              <figcaption>Alipay</figcaption>
             </figure>
             <figure>
-              <img src="/assets/donate-paypal.jpg" alt="PayPal 打赏二维码" />
+              <img src="/assets/donate-paypal.jpg" alt={t('settings.paypalAlt')} />
               <figcaption>PayPal</figcaption>
             </figure>
           </div>
@@ -590,6 +627,7 @@ function SettingsPage() {
 }
 
 function TrainingPage() {
+  const { t, locale } = useI18n()
   const [capture, setCapture] = useState<CaptureRecord | SavedArticle | null>(null)
   const [title, setTitle] = useState('')
   const [subtitle, setSubtitle] = useState('')
@@ -604,8 +642,8 @@ function TrainingPage() {
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState('')
 
-  const queryError = useMemo(
-    () => new URLSearchParams(window.location.search).get('error') ?? '',
+  const queryErrorCode = useMemo(
+    () => new URLSearchParams(window.location.search).get('errorCode') as ErrorCode | null,
     [],
   )
 
@@ -620,8 +658,8 @@ function TrainingPage() {
         setLoading(false)
         return
       }
-      if (queryError) {
-        setLoadError(queryError)
+      if (queryErrorCode) {
+        setLoadError(t(`error.${queryErrorCode}`))
         setCapture(null)
         setTitle('')
         setSubtitle('')
@@ -635,7 +673,7 @@ function TrainingPage() {
         return
       }
       if (!response.data) {
-        setLoadError('没有找到待处理的文章。')
+      setLoadError(t('training.noCapture'))
         if (draftResponse.ok && draftResponse.data?.articleId === null) setPreReadingPrediction(draftResponse.data.value)
         setLoading(false)
         return
@@ -656,10 +694,10 @@ function TrainingPage() {
     }
 
     void loadCapture()
-  }, [queryError])
+  }, [queryErrorCode, t])
 
   useEffect(() => {
-    if (loading || queryError) return
+    if (loading || queryErrorCode) return
     const timer = window.setTimeout(() => {
       void sendExtensionMessage<null>({
         type: 'save-pre-reading-prediction-draft',
@@ -668,12 +706,12 @@ function TrainingPage() {
       })
     }, 500)
     return () => window.clearTimeout(timer)
-  }, [capture?.id, loading, preReadingPrediction, queryError])
+  }, [capture?.id, loading, preReadingPrediction, queryErrorCode])
 
   const saveCurrentArticle = async () => {
     const trimmedText = text.trim()
     if (trimmedText.length < 120 || trimmedText.length > 36_000) {
-      setStatus('正文需要 120–36,000 个字符，或先从网页重新获取文章。')
+      setStatus(t('training.articleLength'))
       return
     }
 
@@ -684,7 +722,7 @@ function TrainingPage() {
     )
     const article: CaptureRecord = {
       id: capture?.id ?? crypto.randomUUID(),
-      title: title.trim() || '未命名文章',
+      title: title.trim() || t('common.untitled'),
       metadata: {
         subtitle: subtitle.trim(),
         author: author.trim(),
@@ -710,13 +748,13 @@ function TrainingPage() {
     }
     await sendExtensionMessage<null>({ type: 'clear-pending-capture' })
     setCapture(response.data)
-    setStatus('已保存到本地文章架。你可以继续编辑，或返回插件面板打开其他文章。')
+    setStatus(t('training.saved'))
   }
 
   const currentArticle = (): CaptureRecord | SavedArticle => {
     const trimmedText = text.trim()
     const fields = {
-      title: title.trim() || '未命名文章',
+      title: title.trim() || t('common.untitled'),
       metadata: {
         subtitle: subtitle.trim(),
         author: author.trim(),
@@ -757,121 +795,121 @@ function TrainingPage() {
       }
       session = response.data
     }
-    const model = buildReadingExportModel(article, session)
+    const model = buildReadingExportModel(article, session, locale)
     if (format === 'markdown') {
-      downloadText(generateReadingMarkdown(model), sanitizeFilename(article.title, 'md'), 'text/markdown')
-      setStatus('已导出完整 Markdown 训练记录。')
+      downloadText(generateReadingMarkdown(model), sanitizeFilename(article.title, 'md', locale), 'text/markdown')
+      setStatus(t('training.exportedMarkdown'))
       return
     }
     if (format === 'json') {
-      downloadText(generateReadingJson(model), sanitizeFilename(article.title, 'json'), 'application/json')
-      setStatus('已导出完整 JSON 训练记录。')
+      downloadText(generateReadingJson(model), sanitizeFilename(article.title, 'json', locale), 'application/json')
+      setStatus(t('training.exportedJson'))
       return
     }
     const markdown = generateReadingMarkdown(model)
     const obsidian = buildObsidianUrl(markdown, { title: article.title })
     if (obsidian.useClipboard) {
       if (!navigator.clipboard?.writeText) {
-        setStatus('内容较长且浏览器不支持剪贴板，请改用 Markdown 导出。')
+        setStatus(t('side.exportClipboardTooLong'))
         return
       }
       try {
         await navigator.clipboard.writeText(markdown)
       } catch {
-        setStatus('无法写入剪贴板，请改用 Markdown 导出。')
+        setStatus(t('side.exportClipboardFailed'))
         return
       }
       window.open(obsidian.url, '_blank', 'noopener,noreferrer')
-      setStatus('内容已复制，Obsidian 将从剪贴板创建笔记。')
+      setStatus(t('side.exportObsidianCopied'))
       return
     }
     window.open(obsidian.url, '_blank', 'noopener,noreferrer')
-    setStatus('已请求 Obsidian 创建完整训练记录。')
+    setStatus(t('side.exportObsidianRequested'))
   }
 
   const openPrintPage = async () => {
     if (!capture || !('savedAt' in capture)) {
-      setStatus('请先保存文章，再打开打印页。')
+      setStatus(t('training.saveBeforePrint'))
       return
     }
     const response = await sendExtensionMessage<{ tabId: number | undefined }>({
       type: 'open-print-article',
       articleId: capture.id,
     })
-    setStatus(response.ok ? '已打开打印页，可选择“保存为 PDF”。' : errorMessage(response.error))
+    setStatus(response.ok ? t('side.printOpened') : errorMessage(response.error))
   }
 
   return (
     <main className="app-shell training-shell">
       <header className="training-header">
         <div>
-          <span className="eyebrow">READ BEFORE YOU TRAIN</span>
-          <h1>先把文章读进来</h1>
-          <p>文章默认保存在本地；启用 AI 后，训练所需正文和回答会直接发送到你配置的模型服务商。</p>
+          <span className="eyebrow">{t('training.eyebrow')}</span>
+          <h1>{t('training.heading')}</h1>
+          <p>{t('training.description')}</p>
         </div>
-        <span className="local-pill">LOCAL ONLY</span>
+        <span className="local-pill">{t('common.localOnly')}</span>
       </header>
 
       {loading ? (
-        <div className="loading-state">正在加载捕获内容…</div>
+        <div className="loading-state">{t('training.loading')}</div>
       ) : (
         <>
           {loadError && (
             <div className="notice error-notice" role="alert">
-              <strong>这次没有自动读到正文</strong>
+              <strong>{t('training.captureFailed')}</strong>
               <span>{loadError}</span>
             </div>
           )}
           <section className="editor-card">
             <div className="editor-meta">
-              <span className="section-kicker">ARTICLE INTAKE</span>
-              {capture?.selectedText && <span className="selection-pill">使用了选中文本</span>}
+              <span className="section-kicker">{t('training.sourceMeta')}</span>
+              {capture?.selectedText && <span className="selection-pill">{t('training.selectedText')}</span>}
             </div>
             <label>
-              标题
-              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="文章标题" />
+              {t('training.title')}
+              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('training.titlePlaceholder')} />
             </label>
             <label>
-              副标题（可选）
-              <input value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder="没有就留空" maxLength={240} />
+              {t('training.subtitle')}
+              <input value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder={t('training.subtitlePlaceholder')} maxLength={240} />
             </label>
             <label>
-              来源 URL
+              {t('training.url')}
               <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" inputMode="url" />
             </label>
             <label>
-              作者（可选）
-              <input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="作者名" />
+              {t('training.author')}
+              <input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder={t('training.authorPlaceholder')} />
             </label>
             <label>
-              来源说明（可选）
-              <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="例如：期刊、专栏或书名" maxLength={240} />
+              {t('training.source')}
+              <input value={source} onChange={(event) => setSource(event.target.value)} placeholder={t('training.sourcePlaceholder')} maxLength={240} />
             </label>
             <label className="prediction-field">
-              <span>阅读前预测（可选）</span>
-              <small>只根据标题、来源和已有信息，猜测文章可能讨论的问题、主张或论证方向。读完后回看。</small>
-              <textarea value={preReadingPrediction} onChange={(event) => setPreReadingPrediction(event.target.value)} placeholder="例如：这篇文章可能解释一个现象背后的原因，以及它对公众判断的影响。" rows={4} maxLength={2000} />
+              <span>{t('training.prediction')}</span>
+              <small>{t('training.predictionHint')}</small>
+              <textarea value={preReadingPrediction} onChange={(event) => setPreReadingPrediction(event.target.value)} placeholder={t('training.predictionPlaceholder')} rows={4} maxLength={2000} />
             </label>
             <details className="source-editor" open={sourceEditorOpen} onToggle={(event) => setSourceEditorOpen(event.currentTarget.open)}>
               <summary>
-                <span>编辑原文</span>
-                <small>提取异常或需要手动修正时展开</small>
+                <span>{t('training.sourceEditor')}</span>
+                <small>{t('training.sourceEditorHint')}</small>
               </summary>
               <label>
-                正文
-                <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="把文章正文粘贴到这里…" rows={22} maxLength={36_000} />
+                {t('training.articleBody')}
+                <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={t('training.articleBodyPlaceholder')} rows={22} maxLength={36_000} />
               </label>
             </details>
             {text.trim() && <ArticlePreview blocks={getArticleBlocks(text, capture && capture.text.trim() === text.trim() ? capture.blocks : undefined)} />}
             <div className="editor-footer">
-              <span className="character-count">{text.length.toLocaleString()} 字符</span>
+              <span className="character-count">{text.length.toLocaleString()} {t('common.characters')}</span>
               <div className="editor-actions">
                 <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('markdown')}>Markdown</button>
                 <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('json')}>JSON</button>
                 <button className="secondary-button" type="button" onClick={() => void exportCurrentArticle('obsidian')}>Obsidian</button>
-                <button className="secondary-button" type="button" onClick={() => void openPrintPage()}>打印 / PDF</button>
+                <button className="secondary-button" type="button" onClick={() => void openPrintPage()}>{t('training.printPdf')}</button>
                 <button className="primary-button" type="button" onClick={() => void saveCurrentArticle()} disabled={saving}>
-                  {saving ? '保存中…' : '保存并开始训练'}
+                  {saving ? t('training.saving') : t('training.saveStart')}
                 </button>
               </div>
             </div>
@@ -885,6 +923,7 @@ function TrainingPage() {
 }
 
 function ArticlePreview({ blocks }: { blocks: ArticleBlock[] }) {
+  const { t } = useI18n()
   const sourceNumberFor = (index: number, itemIndex = 0) => {
     const previous = blocks.slice(0, index).reduce((total, block) => {
       if (block.type === 'list') return total + block.items.length
@@ -898,8 +937,8 @@ function ArticlePreview({ blocks }: { blocks: ArticleBlock[] }) {
   return (
     <section className="article-preview">
       <div className="article-preview-heading">
-        <span className="section-kicker">READING PREVIEW</span>
-        <span>保留原文结构，使用插件阅读样式</span>
+        <span className="section-kicker">{t('training.preview')}</span>
+        <span>{t('training.previewHint')}</span>
       </div>
       <article className="article-preview-content">
         {blocks.map((block, index) => {
@@ -926,6 +965,7 @@ function ArticlePreview({ blocks }: { blocks: ArticleBlock[] }) {
 }
 
 function TrainingCoach({ articleId }: { articleId: string }) {
+  const { t, locale } = useI18n()
   const [session, setSession] = useState<TrainingSession | null>(null)
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -1016,7 +1056,7 @@ function TrainingCoach({ articleId }: { articleId: string }) {
 
   const submit = async () => {
     if (answer.trim().length < 5) {
-      setError('请先写下至少 5 个字符的独立回答。')
+      setError(t('coach.answerTooShort'))
       return
     }
     setBusy(true)
@@ -1064,9 +1104,9 @@ function TrainingCoach({ articleId }: { articleId: string }) {
     if (!bridge) return
     try {
       await navigator.clipboard.writeText(bridge.prompt)
-      setBridgeError('评分请求已复制，可以粘贴到 ChatGPT。')
+      setBridgeError(t('bridge.copied'))
     } catch {
-      setBridgeError('浏览器不允许自动复制，请展开请求文本后手动复制。')
+      setBridgeError(t('bridge.copyFailed'))
     }
   }
 
@@ -1094,7 +1134,7 @@ function TrainingCoach({ articleId }: { articleId: string }) {
   }
 
   const reset = async () => {
-    if (!window.confirm('重新开始这篇文章的训练？现有回答会被删除。')) return
+    if (!window.confirm(t('coach.confirmReset'))) return
     const response = await sendExtensionMessage<null>({
       type: 'reset-training-session',
       articleId,
@@ -1113,78 +1153,79 @@ function TrainingCoach({ articleId }: { articleId: string }) {
     setError('')
   }
 
-  const step = session ? LESSON_STEPS[Math.min(session.currentStep, LESSON_STEPS.length - 1)] : null
+  const localizedSteps = getLessonSteps(locale)
+  const step = session ? localizedSteps[Math.min(session.currentStep, localizedSteps.length - 1)] : null
   const latestTurn = session?.turns.at(-1)
   const completed = session?.currentStep === LESSON_STEPS.length
 
   return (
-    <section className="coach-card" aria-label="图尔敏阅读训练">
+    <section className="coach-card" aria-label={t('coach.aria')}>
       <div className="coach-heading">
         <div>
-          <span className="section-kicker">{aiConfigured ? 'AI COACH' : 'LOCAL COACH'}</span>
-          <h2>八轮独立阅读训练</h2>
-          <p>{aiConfigured ? '先独立回答，再由已配置的模型依据原文评分和追问。' : '先自己读和回答；打开设置即可接入 AI 出题与评分。'}</p>
+          <span className="section-kicker">{aiConfigured ? t('coach.aiLabel') : t('coach.localLabel')}</span>
+          <h2>{t('coach.heading')}</h2>
+          <p>{aiConfigured ? t('coach.aiDescription') : t('coach.localDescription')}</p>
         </div>
         {session && <span className="progress-pill">{Math.min(session.currentStep, LESSON_STEPS.length)} / {LESSON_STEPS.length}</span>}
       </div>
 
       {!loaded ? (
-        <p className="loading-state compact-loading">正在加载训练进度…</p>
+        <p className="loading-state compact-loading">{t('coach.loading')}</p>
       ) : !session ? (
         <div className="coach-start">
           <ol className="pre-read-list">
-            <li>先读完标题、正文和段落结构，不看摘要或外部资料。</li>
-            <li>回答只依据当前文章；原文没有交代的地方可以写“未交代”。</li>
-            <li>每轮提交后会保存在本地，刷新页面可以继续。</li>
+            <li>{t('coach.preRead1')}</li>
+            <li>{t('coach.preRead2')}</li>
+            <li>{t('coach.preRead3')}</li>
           </ol>
           <label className="read-confirmation">
             <input type="checkbox" checked={readConfirmed} onChange={(event) => setReadConfirmed(event.target.checked)} />
-            我已独立读完，准备开始第一轮
+            {t('coach.readConfirm')}
           </label>
           <button className="primary-button" type="button" onClick={() => void start()} disabled={!readConfirmed || busy}>
-            {busy ? '正在开始…' : aiConfigured ? '开始第一轮（AI 出题）' : '开始第一轮'}
+            {busy ? t('coach.starting') : aiConfigured ? t('coach.startAi') : t('coach.start')}
           </button>
-          {!aiConfigured && <button className="text-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })}>去设置 AI</button>}
+          {!aiConfigured && <button className="text-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })}>{t('coach.goSettings')}</button>}
         </div>
       ) : completed && !reinforcing ? (
         <>
           <div className="coach-complete">
             <span className="complete-mark">✓</span>
             <div>
-              <h3>八轮训练已完成</h3>
-              <p>你已经留下了完整的阅读思考记录。每轮回答和 AI 反馈都保存在本地。</p>
+              <h3>{t('coach.completedHeading')}</h3>
+              <p>{t('coach.completedCopy')}</p>
             </div>
-            <button className="secondary-button" type="button" onClick={() => void reset()}>重新开始</button>
-            <button className="secondary-button" type="button" onClick={() => { setReinforcing(true); setAnswer(''); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>再巩固一轮</button>
+            <button className="secondary-button" type="button" onClick={() => void reset()}>{t('coach.restart')}</button>
+            <button className="secondary-button" type="button" onClick={() => { setReinforcing(true); setAnswer(''); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>{t('coach.reinforce')}</button>
           </div>
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
         </>
       ) : step ? (
         <div className="coach-round">
           <div className="round-meta">
-            <span>{reinforcing ? '巩固复盘' : `${step.stage} · ${step.name}`}</span>
+            <span>{reinforcing ? t('coach.reinforceLabel') : `${step.stage} · ${step.name}`}</span>
             <strong>{step.focus}</strong>
           </div>
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} />}
           <h3>{session.currentQuestion || step.question}</h3>
           <p className="round-instruction">{step.instruction}</p>
-          {aiConfigured && session.turns.length === 0 && session.currentStep === 0 && session.currentQuestion === LESSON_STEPS[0].question && (
-            <button className="text-button retry-button" type="button" onClick={() => void retryAiStart()} disabled={busy}>重新请求 AI 首轮问题</button>
+          {aiConfigured && session.turns.length === 0 && session.currentStep === 0 && session.currentQuestion === localizedSteps[0].question && (
+            <button className="text-button retry-button" type="button" onClick={() => void retryAiStart()} disabled={busy}>{t('coach.retryAi')}</button>
           )}
-          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="先写下自己的理解，不必追求一次答对…" rows={8} maxLength={4000} disabled={busy || Boolean(bridge)} />
+          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={8} maxLength={4000} disabled={busy || Boolean(bridge)} />
           <div className="round-footer">
-            <span>{answer.length.toLocaleString()} / 4,000 字符</span>
+            <span>{answer.length.toLocaleString()} / 4,000 {t('common.characters')}</span>
             <button className="primary-button" type="button" onClick={() => void submit()} disabled={busy || Boolean(bridge) || answer.trim().length < 5}>
-              {busy ? aiConfigured ? 'AI 评分中…' : '保存中…' : aiConfigured ? '提交并评分' : '生成评分请求'}
+              {busy ? aiConfigured ? t('coach.grading') : t('coach.saving') : aiConfigured ? t('coach.submit') : t('coach.generateBridge')}
             </button>
           </div>
           {bridge && <BridgeCard bridge={bridge} reply={bridgeReply} error={bridgeError} busy={busy} onCopy={() => void copyBridgePrompt()} onOpenChat={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')} onReply={setBridgeReply} onImport={() => void importBridgeFeedback()} />}
           {session.turns.length > 0 && (
             <details className="training-history">
-              <summary>查看已完成的 {session.turns.length} 轮</summary>
+              <summary>{t('coach.history', { count: session.turns.length })}</summary>
               {session.turns.map((turn) => (
                 <div key={`${turn.stepIndex}-${turn.submittedAt}`}>
-                  <strong>第 {turn.stepIndex + 1} 轮{turn.feedback ? ` · ${turn.feedback.total} / 100` : ''}</strong>
+                  <strong>{t('coach.round', { number: turn.stepIndex + 1 })}{turn.feedback ? ` · ${turn.feedback.total} / 100` : ''}</strong>
                   <p>{turn.answer}</p>
                 </div>
               ))}
@@ -1198,39 +1239,40 @@ function TrainingCoach({ articleId }: { articleId: string }) {
 }
 
 function FeedbackCard({ feedback }: { feedback: AiFeedback }) {
+  const { t } = useI18n()
   const dimensions = [
-    ['原文忠实度', feedback.dimensions.fidelity],
-    ['核心主张', feedback.dimensions.claim],
-    ['因果分析', feedback.dimensions.cause],
-    ['论证结构', feedback.dimensions.structure],
+    [t('feedback.fidelity'), feedback.dimensions.fidelity],
+    [t('feedback.claim'), feedback.dimensions.claim],
+    [t('feedback.cause'), feedback.dimensions.cause],
+    [t('feedback.structure'), feedback.dimensions.structure],
   ] as const
 
   return (
     <div className="feedback-card">
       <div className="feedback-header">
         <div>
-          <span className="section-kicker">AI FEEDBACK</span>
-          <h4>本轮评分：{feedback.total} / 100</h4>
+          <span className="section-kicker">{t('feedback.label')}</span>
+          <h4>{t('feedback.score', { score: feedback.total })}</h4>
         </div>
       </div>
       <div className="feedback-dimensions">
         {dimensions.map(([label, dimension]) => (
           <div key={label}>
             <span>{label}</span>
-            <strong>{dimension.score === null ? '未测' : `${dimension.score} / 10`}</strong>
+            <strong>{dimension.score === null ? t('common.unscored') : `${dimension.score} / 10`}</strong>
             <small>{dimension.reason}</small>
           </div>
         ))}
       </div>
       {(feedback.strengths.length > 0 || feedback.gaps.length > 0) && (
         <div className="feedback-notes">
-          {feedback.strengths.map((item, index) => <p className="feedback-strength" key={`strength-${index}`}><strong>做得好：</strong>{item.comment}{item.answerQuote && `「${item.answerQuote}」`}</p>)}
-          {feedback.gaps.map((item, index) => <p className="feedback-gap" key={`gap-${index}`}><strong>可以改进：</strong>{item.comment}{item.answerQuote && `「${item.answerQuote}」`}</p>)}
+          {feedback.strengths.map((item, index) => <p className="feedback-strength" key={`strength-${index}`}><strong>{t('feedback.good')}</strong>{item.comment}{item.answerQuote && `「${item.answerQuote}」`}</p>)}
+          {feedback.gaps.map((item, index) => <p className="feedback-gap" key={`gap-${index}`}><strong>{t('feedback.improve')}</strong>{item.comment}{item.answerQuote && `「${item.answerQuote}」`}</p>)}
         </div>
       )}
       <details className="feedback-sources">
-        <summary>查看原文依据</summary>
-        {feedback.sources.map((source) => <p key={`${source.paragraph}-${source.quote}`}><strong>第 {source.paragraph} 段：</strong>“{source.quote}”<br />{source.comment}</p>)}
+        <summary>{t('feedback.sources')}</summary>
+        {feedback.sources.map((source) => <p key={`${source.paragraph}-${source.quote}`}><strong>{t('feedback.paragraph', { number: source.paragraph })}</strong>“{source.quote}”<br />{source.comment}</p>)}
       </details>
     </div>
   )
@@ -1248,29 +1290,31 @@ type BridgeCardProps = {
 }
 
 function BridgeCard({ bridge, reply, error, busy, onCopy, onOpenChat, onReply, onImport }: BridgeCardProps) {
+  const { t } = useI18n()
   return (
     <div className="bridge-card">
-      <span className="section-kicker">CHATGPT ASSISTED REVIEW</span>
-      <h4>回答已保存，完成一次辅助评分</h4>
-      <p>将评分请求复制到 ChatGPT，只粘贴完整 JSON 反馈回来。导入前会重新核验 requestId、分数、回答引用和原文依据。</p>
+      <span className="section-kicker">{t('bridge.eyebrow')}</span>
+      <h4>{t('bridge.heading')}</h4>
+      <p>{t('bridge.description')}</p>
       <div className="bridge-actions">
-        <button className="secondary-button" type="button" onClick={onCopy}>复制评分请求</button>
-        <button className="text-button" type="button" onClick={onOpenChat}>打开 ChatGPT</button>
+        <button className="secondary-button" type="button" onClick={onCopy}>{t('bridge.copy')}</button>
+        <button className="text-button" type="button" onClick={onOpenChat}>{t('bridge.openChat')}</button>
       </div>
       <details className="bridge-prompt">
-        <summary>查看评分请求</summary>
-        <textarea aria-label="评分请求" readOnly value={bridge.prompt} rows={8} />
+        <summary>{t('bridge.viewPrompt')}</summary>
+        <textarea aria-label={t('bridge.promptAria')} readOnly value={bridge.prompt} rows={8} />
       </details>
-      <textarea aria-label="评分反馈 JSON" value={reply} onChange={(event) => onReply(event.target.value)} placeholder={'粘贴 ChatGPT 返回的 JSON，例如：{"requestId":"…","feedback":{…}}'} rows={6} maxLength={30_000} disabled={busy} />
+      <textarea aria-label={t('bridge.feedbackAria')} value={reply} onChange={(event) => onReply(event.target.value)} placeholder={t('bridge.feedbackPlaceholder')} rows={6} maxLength={30_000} disabled={busy} />
       {error && <p className="inline-error" role="alert">{error}</p>}
       <button className="primary-button" type="button" onClick={onImport} disabled={busy || !reply.trim()}>
-        {busy ? '校验中…' : '校验并导入反馈'}
+        {busy ? t('bridge.validating') : t('bridge.import')}
       </button>
     </div>
   )
 }
 
 function PrintPage() {
+  const { t, locale } = useI18n()
   const [html, setHtml] = useState('')
   const [error, setError] = useState('')
 
@@ -1284,7 +1328,7 @@ function PrintPage() {
         return
       }
       if (!response.data) {
-        setError('没有找到待打印的文章。')
+        setError(t('print.noArticle'))
         return
       }
       let session: TrainingSession | null = null
@@ -1299,23 +1343,24 @@ function PrintPage() {
         }
         session = sessionResponse.data
       }
-      setHtml(generateReadingPdfHtml(buildReadingExportModel(response.data, session)))
+      setHtml(generateReadingPdfHtml(buildReadingExportModel(response.data, session, locale)))
     }
     void loadArticle()
-  }, [])
+  }, [locale, t])
 
   if (error) {
     return <main className="print-shell"><div className="notice error-notice">{error}</div></main>
   }
   if (!html) {
-    return <main className="print-shell"><div className="loading-state">正在加载打印内容…</div></main>
+    return <main className="print-shell"><div className="loading-state">{t('print.loading')}</div></main>
   }
 
-  return <main className="print-shell"><iframe className="print-frame" title="问读完整训练记录" srcDoc={html} /></main>
+  return <main className="print-shell"><iframe className="print-frame" title={t('print.title')} srcDoc={html} /></main>
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
+function formatDate(value: string, locale: import('./types').Locale = detectLocale()) {
+  const dateLocale = locale === 'zh-CN' ? 'zh-CN' : locale
+  return new Intl.DateTimeFormat(dateLocale, {
     month: 'short',
     day: 'numeric',
   }).format(new Date(value))

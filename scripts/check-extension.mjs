@@ -10,6 +10,9 @@ if (!existsSync(manifestPath)) {
 }
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+if (manifest.default_locale !== 'zh_CN') {
+  throw new Error('构建产物缺少默认语言配置：zh_CN')
+}
 const requiredFiles = [
   manifest.background?.service_worker,
   manifest.side_panel?.default_path,
@@ -31,11 +34,8 @@ for (const permission of ['activeTab', 'scripting', 'sidePanel', 'storage']) {
   }
 }
 
-const hostPermissions = new Set(manifest.host_permissions ?? [])
-for (const origin of ['http://*/*', 'https://*/*']) {
-  if (!hostPermissions.has(origin)) {
-    throw new Error(`manifest 缺少正文捕获所需的站点权限：${origin}`)
-  }
+if ((manifest.host_permissions ?? []).length > 0) {
+  throw new Error('manifest 不应声明全站 host_permissions，应使用 activeTab 临时访问当前页面。')
 }
 
 const command = manifest.commands?.['capture-and-open']
@@ -44,21 +44,14 @@ if (!command?.suggested_key?.default || !command?.description) {
 }
 
 const optionalOrigins = new Set(manifest.optional_host_permissions ?? [])
-for (const origin of [
-  'https://api.openai.com/*',
-  'https://api.deepseek.com/*',
-  'https://generativelanguage.googleapis.com/*',
-  'https://dashscope.aliyuncs.com/*',
-  'https://open.bigmodel.cn/*',
-  'https://api.moonshot.cn/*',
-]) {
+for (const origin of ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*']) {
   if (!optionalOrigins.has(origin)) {
     throw new Error(`manifest 缺少 AI 服务的可选网络权限：${origin}`)
   }
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
-for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'open-manual-paste-page', 'preReadingPredictionDraft', 'save-pre-reading-prediction-draft', 'currentStep', 'articleBody', 'blocks', 'advertisement', 'narrated by', 'itemprop=', '浏览器内部页', '/chat/completions', 'AbortController', 'preReadingPrediction', '阅读前预测与文章实际主张']) {
+for (const marker of ['ai-start', 'ai-grade', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'open-manual-paste-page', 'preReadingPredictionDraft', 'save-pre-reading-prediction-draft', 'currentStep', 'articleBody', 'blocks', 'advertisement', 'narrated by', 'itemprop=', '浏览器内部页', '/chat/completions', 'AI_INVALID_ENDPOINT', 'AbortController', 'preReadingPrediction', 'ai.startReflection']) {
   if (!background.includes(marker)) {
     throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
   }
@@ -68,7 +61,7 @@ const appBundle = readdirSync(resolve(dist, 'assets'))
   .filter((file) => file.endsWith('.js'))
   .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
   .join('\n')
-for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new', '阅读前预测', '手动粘贴文章', '快速开始', '获取当前文章', 'open-manual-paste-page', 'save-pre-reading-prediction-draft']) {
+for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', 'settings.apiEndpoint', 'provider.custom', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new', '阅读前预测', '手动粘贴文章', '快速开始', '获取当前文章', 'open-manual-paste-page', 'save-pre-reading-prediction-draft', 'onChanged']) {
   if (!appBundle.includes(marker)) {
     throw new Error(`训练页面缺少核心交互：${marker}`)
   }
@@ -80,6 +73,12 @@ if (!appBundle.includes('generateReadingMarkdown') && !appBundle.includes('完�
 for (const asset of ['assets/donate-alipay.jpg', 'assets/donate-paypal.jpg']) {
   if (!existsSync(resolve(dist, asset))) {
     throw new Error(`构建产物缺少打赏资源：${asset}`)
+  }
+}
+
+for (const locale of ['zh_CN', 'en', 'ja', 'ko']) {
+  if (!existsSync(resolve(dist, '_locales', locale, 'messages.json'))) {
+    throw new Error(`构建产物缺少本地化资源：_locales/${locale}/messages.json`)
   }
 }
 
