@@ -253,6 +253,40 @@ function SidePanel() {
         <p className="status-message" role="status">{status}</p>
       </section>
 
+      <details className="quick-start">
+        <summary>第一次使用？查看快速开始</summary>
+        <ol>
+          <li>
+            <strong>配置 AI</strong>
+            <span>点击右上角设置，填写服务商、API endpoint、模型名称和 API key，并测试连接。</span>
+          </li>
+          <li>
+            <strong>获取文章</strong>
+            <span>打开文章页面后，按 Ctrl/⌘ + Shift + 8，或点击“获取当前文章”。</span>
+          </li>
+          <li>
+            <strong>读取失败时手动粘贴</strong>
+            <span>如果网页不允许插件读取，点击“手动粘贴文章”，再填写标题和正文。</span>
+          </li>
+          <li>
+            <strong>检查并预测</strong>
+            <span>检查正文和段落，再根据标题、来源和已有信息填写阅读前预测。预测会自动保存。</span>
+          </li>
+          <li>
+            <strong>保存并开始训练</strong>
+            <span>确认内容无误后，点击“保存并开始训练”。</span>
+          </li>
+          <li>
+            <strong>完成 AI 训练</strong>
+            <span>先确认已经读完文章，随后 AI 会逐轮出题并对你的回答进行评分和反馈。</span>
+          </li>
+          <li>
+            <strong>导出记录</strong>
+            <span>训练完成后，可以导出 Markdown、Obsidian、JSON，或打开打印页保存为 PDF。</span>
+          </li>
+        </ol>
+      </details>
+
       <section className="saved-section">
         <div className="section-heading">
           <div>

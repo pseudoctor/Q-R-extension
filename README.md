@@ -1,19 +1,70 @@
 # 问读 · 浏览器伴读
 
-Chrome/Edge Manifest V3 extension companion for the 问读 reading trainer.
+Chrome/Edge Manifest V3 浏览器插件，把正在阅读的文章带入问读训练页，帮助你完成阅读前预测、图尔敏论证训练、AI 出题与评分，并保存完整阅读记录。
 
-## Current scope
+## 快速开始
 
-This repository contains the extension scaffold only. It does not yet capture page content, call the coaching API, or migrate records from the web application.
+### 1. 安装插件
 
-The planned shape is:
+```bash
+pnpm install
+pnpm build
+```
 
-- Side Panel for capture, recent sessions, favorites, and quick resume.
-- Extension tab for the full eight-round training workspace.
-- IndexedDB for article sessions and `chrome.storage` for small settings.
-- Shared, pure reading/export modules with the existing web application where the boundary is explicit.
+在 Chrome 或 Edge 打开扩展管理页，开启“开发者模式”，选择“加载已解压的扩展程序”，载入项目生成的 `dist/` 目录。代码更新后重新执行 `pnpm build`，再在扩展管理页点击“重新加载”。
 
-## Development
+### 2. 配置 AI
+
+点击插件侧边栏右上角的设置按钮，选择服务商，填写 API endpoint、模型名称和 API key，先测试连接，再保存设置。AI 出题和评分需要先完成这一步。
+
+API key 只保存在浏览器的插件本地存储中，扩展存储不是加密保险箱，不要在共享电脑上保存高权限密钥。
+
+### 3. 获取文章
+
+打开普通网页中的文章，然后使用以下任一方式：
+
+- Windows/Linux：按 `Ctrl+Shift+8`
+- macOS：按 `Command+Shift+8`
+- 打开插件侧边栏，点击“获取当前文章”
+
+文章会在问读训练页中打开。开始训练前，请检查标题、来源和正文，并确认段落结构是否需要手动调整。
+
+### 4. 无法自动读取时
+
+浏览器内部页、扩展页、商店页和部分 PDF 不允许插件读取。遇到这种情况，打开侧边栏中的“手动粘贴文章”，然后在训练页填写标题、来源和正文。
+
+### 5. 完成训练
+
+在正文下方填写阅读前预测，只根据标题、来源和已有信息猜测文章可能讨论的问题、主张或论证方向。预测会在输入停止后自动保存在本地。
+
+确认文章内容后，点击“保存并开始训练”。先确认已经读完文章，之后 AI 会逐轮生成问题，并对你的回答进行评分和反馈。
+
+### 6. 保存和导出
+
+训练记录会保存在浏览器本地。完成训练后，可以导出：
+
+- Markdown
+- Obsidian
+- JSON
+- 打印页或 PDF
+
+## 常见问题
+
+### 快捷键没有反应
+
+请确认当前标签页是普通网页，并检查浏览器的扩展快捷键设置是否与其他扩展冲突。也可以直接在侧边栏点击“获取当前文章”。
+
+### 插件没有获取到正文
+
+先刷新文章页面并重试。如果页面仍然不允许插件读取，请使用“手动粘贴文章”。正文过短或页面使用了特殊阅读器时，也可能需要手动粘贴。
+
+### AI 连接失败
+
+检查 API endpoint、模型名称和 API key 是否匹配，并在设置页重新测试连接。服务商暂时无法返回模型列表时，可以按照服务商支持的模型名称手动填写。
+
+## 开发
+
+项目使用 Vite、React、TypeScript 和 Chrome/Edge Manifest V3。
 
 ```bash
 pnpm install
@@ -22,4 +73,4 @@ pnpm lint
 pnpm build
 ```
 
-Architecture decisions are recorded in `docs/adr/`.
+架构决策记录在 `docs/adr/`，扩展的构建产物位于 `dist/`。
