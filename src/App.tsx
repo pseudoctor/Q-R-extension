@@ -441,6 +441,8 @@ function SettingsPage() {
   const [modelSource, setModelSource] = useState<'provider' | 'fallback' | null>(null)
   const [modelStatus, setModelStatus] = useState('')
   const [status, setStatus] = useState('')
+  const [testMode, setTestMode] = useState(false)
+  const [testModeBusy, setTestModeBusy] = useState(false)
 
   const provider = providerById(settings.provider)
 
@@ -482,6 +484,19 @@ function SettingsPage() {
     if (!response.ok) setStatus(errorMessage(response.error))
   }
 
+  const saveTestMode = async (enabled: boolean) => {
+    setTestModeBusy(true)
+    setStatus('')
+    const response = await sendExtensionMessage<boolean>({ type: 'save-test-mode', enabled })
+    setTestModeBusy(false)
+    if (!response.ok) {
+      setStatus(errorMessage(response.error))
+      return
+    }
+    setTestMode(response.data)
+    setStatus(t('settings.testModeSaved'))
+  }
+
   const selectProvider = (providerId: AiSettings['provider']) => {
     const nextProvider = providerById(providerId)
     const nextSettings = { ...settings, provider: providerId, model: nextProvider.defaultModel }
@@ -513,12 +528,17 @@ function SettingsPage() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }).then((response) => {
+      void Promise.all([
+        sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }),
+        sendExtensionMessage<boolean>({ type: 'get-test-mode' }),
+      ]).then(([response, testModeResponse]) => {
         setLoaded(true)
         if (response.ok) {
           setSettings(response.data)
           if (response.data.apiKey.trim()) void refreshModels(response.data)
         } else setStatus(errorMessage(response.error))
+        if (testModeResponse.ok) setTestMode(testModeResponse.data)
+        else setStatus(errorMessage(testModeResponse.error))
       })
     }, 0)
     return () => window.clearTimeout(timer)
@@ -554,6 +574,16 @@ function SettingsPage() {
             <button className="secondary-button" type="button" onClick={() => void openShortcuts()}>
               {t('settings.openShortcuts')}
             </button>
+          </div>
+          <div className="settings-test-mode-row">
+            <div>
+              <strong>{t('settings.testMode')}</strong>
+              <small>{t('settings.testModeHint')}</small>
+            </div>
+            <label className="settings-checkbox-control">
+              <input type="checkbox" checked={testMode} onChange={(event) => void saveTestMode(event.target.checked)} disabled={testModeBusy} />
+              <span>{testMode ? t('settings.testModeOn') : t('settings.testModeOff')}</span>
+            </label>
           </div>
           <label>
             {t('settings.modelService')}
@@ -984,6 +1014,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
   const paragraphs = useMemo(() => numberArticleBlocks(getArticleBlocks(article.text, article.blocks)), [article])
   const [session, setSession] = useState<TrainingSession | null>(null)
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null)
+  const [testMode, setTestMode] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [aiLoaded, setAiLoaded] = useState(false)
   const [reinforcing, setReinforcing] = useState(false)
@@ -1024,7 +1055,8 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
           articleId,
         }),
         sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }),
-      ]).then(([sessionResponse, settingsResponse]) => {
+        sendExtensionMessage<boolean>({ type: 'get-test-mode' }),
+      ]).then(([sessionResponse, settingsResponse, testModeResponse]) => {
         setLoaded(true)
         setAiLoaded(true)
         if (sessionResponse.ok) {
@@ -1032,6 +1064,8 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
         }
         else setError(errorMessage(sessionResponse.error))
         if (settingsResponse.ok) setAiSettings(settingsResponse.data)
+        if (testModeResponse.ok) setTestMode(testModeResponse.data)
+        else setError(errorMessage(testModeResponse.error))
       })
     }, 0)
     return () => window.clearTimeout(timer)
@@ -1068,6 +1102,27 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     }
     applySession(response.data)
     setBusy(false)
+  }
+
+  const jumpToTestStep = async (stepIndex: number) => {
+    if (!testMode || !session || busy || bridge || stepIndex === session.currentStep) return
+    setBusy(true)
+    setError('')
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'set-training-step',
+      articleId,
+      stepIndex,
+    })
+    setBusy(false)
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return
+    }
+    applySession(response.data)
+    setReinforcing(false)
+    setBridge(null)
+    setBridgeReply('')
+    setBridgeError('')
   }
 
   const currentParagraph = paragraphs[paragraphCursor]
@@ -1308,6 +1363,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
         </div>
       ) : completed && !reinforcing ? (
         <>
+          {testMode && <TestStepNavigator steps={localizedSteps} currentStep={session.currentStep} busy={busy} onJump={(stepIndex) => void jumpToTestStep(stepIndex)} />}
           <div className="coach-complete">
             <span className="complete-mark">✓</span>
             <div>
@@ -1326,6 +1382,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
             <span>{reinforcing ? t('coach.reinforceLabel') : step.name}</span>
             <strong>{step.focus}</strong>
           </div>
+          {testMode && <TestStepNavigator steps={localizedSteps} currentStep={session.currentStep} busy={busy} onJump={(stepIndex) => void jumpToTestStep(stepIndex)} />}
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} referenceAnswer={latestTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(latestTurn)} />}
           {transition && <p className="round-transition">{transition}</p>}
           <h3>{displayedQuestion}</h3>
@@ -1393,6 +1450,44 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
         </div>
       ) : null}
       {error && <p className="inline-error" role="alert">{error}</p>}
+    </section>
+  )
+}
+
+function TestStepNavigator({
+  steps,
+  currentStep,
+  busy,
+  onJump,
+}: {
+  steps: ReturnType<typeof getLessonSteps>
+  currentStep: number
+  busy: boolean
+  onJump: (stepIndex: number) => void
+}) {
+  const { t } = useI18n()
+
+  return (
+    <section className="test-mode-panel" aria-label={t('coach.testModeStepsAria')}>
+      <div className="test-mode-heading">
+        <strong>{t('coach.testModeLabel')}</strong>
+        <small>{t('coach.testModeHint')}</small>
+      </div>
+      <nav className="test-step-grid" aria-label={t('coach.testModeStepsAria')}>
+        {steps.map((step, index) => (
+          <button
+            className={index === currentStep ? 'test-step-button active' : 'test-step-button'}
+            type="button"
+            key={step.id}
+            onClick={() => onJump(index)}
+            disabled={busy}
+            aria-current={index === currentStep ? 'step' : undefined}
+          >
+            <span>{index + 1}</span>
+            <small>{step.name}</small>
+          </button>
+        ))}
+      </nav>
     </section>
   )
 }

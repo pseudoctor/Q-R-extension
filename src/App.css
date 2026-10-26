@@ -786,6 +786,46 @@
   display: block;
 }
 
+.settings-test-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 14px 0;
+}
+
+.settings-test-mode-row > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-test-mode-row strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.settings-checkbox-control {
+  display: flex !important;
+  align-items: center;
+  flex: none;
+  gap: 8px !important;
+  min-height: 40px;
+  color: var(--accent) !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  cursor: pointer;
+}
+
+.settings-checkbox-control input[type='checkbox'] {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 .settings-actions-row {
   display: flex;
   justify-content: flex-end;
@@ -1308,6 +1348,86 @@
   color: var(--ink);
   font-size: 22px;
   font-weight: 700;
+}
+
+.test-mode-panel {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--surface-muted);
+}
+
+.test-mode-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.test-mode-heading strong {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.test-mode-heading small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.test-step-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.test-step-button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  min-height: 42px;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.test-step-button span {
+  color: var(--accent);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.test-step-button small {
+  min-width: 0;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.test-step-button:hover,
+.test-step-button:focus-visible,
+.test-step-button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.test-step-button:active {
+  transform: scale(0.98);
+}
+
+.test-step-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .coach-round h3 {
@@ -1910,6 +2030,19 @@
 
   .settings-shortcut-row button {
     width: 100%;
+  }
+
+  .settings-test-mode-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-checkbox-control {
+    align-self: flex-start;
+  }
+
+  .test-step-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

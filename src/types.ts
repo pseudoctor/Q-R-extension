@@ -186,6 +186,8 @@ export type ExtensionMessage =
   | { type: 'open-shortcuts' }
   | { type: 'get-locale' }
   | { type: 'save-locale'; locale: Locale }
+  | { type: 'get-test-mode' }
+  | { type: 'save-test-mode'; enabled: boolean }
   | { type: 'get-pending-capture' }
   | { type: 'get-pre-reading-prediction-draft' }
   | { type: 'save-pre-reading-prediction-draft'; articleId?: string; value: string }
@@ -197,6 +199,7 @@ export type ExtensionMessage =
   | { type: 'toggle-favorite'; articleId: string }
   | { type: 'get-training-session'; articleId: string }
   | { type: 'start-training-session'; articleId: string }
+  | { type: 'set-training-step'; articleId: string; stepIndex: number }
   | { type: 'save-training-draft'; articleId: string; draft: string; threeSentenceDrafts?: ThreeSentenceDraft[]; paragraphCursor?: number }
   | { type: 'rewind-training-session'; articleId: string }
   | { type: 'reset-training-session'; articleId: string }
@@ -223,6 +226,7 @@ export type StorageState = {
   trainingSessionsV2?: TrainingSessionStoreV2
   aiSettings?: AiSettings
   locale?: Locale
+  testMode?: boolean
   lastTrainingTabId?: number
   lastPrintTabId?: number
 }

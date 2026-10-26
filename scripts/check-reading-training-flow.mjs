@@ -19,8 +19,10 @@ const {
   normalizeTrainingSessionStoreV2,
   readTrainingSessions,
   removeTrainingSession,
+  setTrainingStep,
   startTrainingSession,
 } = await server.ssrLoadModule('/src/storage/training.ts')
+const { readTestMode, writeTestMode } = await server.ssrLoadModule('/src/storage/preferences.ts')
 const { buildGradePrompt, buildReferenceAnswerPrompt, buildStartPrompt, validateAiFeedback, validateAiReferenceAnswer } = await server.ssrLoadModule('/src/ai/coach.ts')
 
 assert.deepEqual(LESSON_STEPS.map((step) => step.id), [
@@ -225,6 +227,25 @@ assert.equal(current.currentStep, 0)
 assert.equal(storage[TRAINING_SESSIONS_KEY].items.length, 1)
 assert.equal(storage[TRAINING_SESSIONS_V2_KEY].items[0].flowId, 'reading-10')
 assert.equal((await readTrainingSessions()).filter((item) => item.articleId === 'legacy').length, 1)
+assert.equal(await readTestMode(), false)
+assert.equal(await writeTestMode(true), true)
+assert.equal(await readTestMode(), true)
+storage[TRAINING_SESSIONS_V2_KEY].items[0] = {
+  ...storage[TRAINING_SESSIONS_V2_KEY].items[0],
+  currentStep: 0,
+  currentQuestion: '旧步骤问题？',
+  draft: '旧草稿',
+  threeSentenceDrafts: [{ paragraph: 1, what: '旧记录', why: '旧原因', takeaway: '旧结论' }],
+  paragraphCursor: 1,
+  completedAt: '2026-01-01T00:00:00.000Z',
+}
+const jumped = await setTrainingStep('legacy', 2)
+assert.equal(jumped?.currentStep, 2)
+assert.equal(jumped?.currentQuestion, getLessonSteps('zh-CN')[2].question)
+assert.equal(jumped?.draft, '')
+assert.equal(jumped?.threeSentenceDrafts, undefined)
+assert.equal(jumped?.paragraphCursor, undefined)
+assert.equal(jumped?.completedAt, undefined)
 await removeTrainingSession('legacy')
 assert.equal((await readTrainingSessions()).some((item) => item.articleId === 'legacy'), false)
 

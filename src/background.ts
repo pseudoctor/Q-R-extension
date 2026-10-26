@@ -45,11 +45,12 @@ import {
   rewindTrainingSession,
   saveTrainingDraft,
   saveTrainingReferenceAnswer,
+  setTrainingStep,
   setTrainingQuestion,
   startTrainingSession,
 } from './storage/training'
 import { readAiSettings, writeAiSettings } from './storage/ai'
-import { readLocale, writeLocale } from './storage/preferences'
+import { readLocale, readTestMode, writeLocale, writeTestMode } from './storage/preferences'
 import { translate } from './i18n/messages'
 import { areThreeSentenceDraftsComplete, isLessonAnswerFormatValid, LESSON_STEPS, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from './training/lessons'
 
@@ -768,6 +769,10 @@ async function handleMessage(
       return success(await readLocale())
     case 'save-locale':
       return success(await writeLocale(message.locale))
+    case 'get-test-mode':
+      return success(await readTestMode())
+    case 'save-test-mode':
+      return success(await writeTestMode(message.enabled === true))
     case 'get-pending-capture': {
       const state = await getStoredState()
       return success(state.pendingCapture ?? null)
@@ -815,6 +820,14 @@ async function handleMessage(
       return success(await getTrainingSession(message.articleId, await readLocale()))
     case 'start-training-session':
       return success(await startTrainingSession(message.articleId, await readLocale()))
+    case 'set-training-step': {
+      if (!(await readTestMode())) return createError('INVALID_REQUEST', '请先在设置中开启测试模式。')
+      const locale = await readLocale()
+      const existing = await getTrainingSession(message.articleId, locale)
+      if (isLegacyTrainingSession(existing)) return trainingReadOnlyError(locale)
+      const session = await setTrainingStep(message.articleId, message.stepIndex, locale)
+      return session ? success(session) : createError('INVALID_REQUEST', '没有找到这次训练。')
+    }
     case 'save-training-draft':
       try {
         const existing = await getTrainingSession(message.articleId, await readLocale())

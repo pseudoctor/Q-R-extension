@@ -80,6 +80,29 @@ export async function startTrainingSession(articleId: string, locale: Locale = '
   })
 }
 
+export async function setTrainingStep(articleId: string, stepIndex: number, locale: Locale = 'zh-CN') {
+  return trainingMutation(async () => {
+    const session = await getWritableTrainingSession(articleId, locale)
+    if (!session || session.flowId !== 'reading-10') return null
+    const requestedStep = Number.isFinite(stepIndex) ? Math.trunc(stepIndex) : 0
+    const nextStep = Math.min(LESSON_STEPS.length - 1, Math.max(0, requestedStep))
+    const step = getLessonSteps(locale)[nextStep]
+    const updated = {
+      ...session,
+      currentStep: nextStep,
+      currentQuestion: step.question,
+      draft: '',
+      threeSentenceDrafts: undefined,
+      paragraphCursor: undefined,
+      completedAt: undefined,
+      updatedAt: new Date().toISOString(),
+    }
+    const sessions = await readTrainingSessionsV2(locale)
+    await writeTrainingSessionsV2(sessions.map((item) => item.articleId === articleId ? updated : item))
+    return updated
+  })
+}
+
 export async function saveTrainingDraft(
   articleId: string,
   answer: string,
