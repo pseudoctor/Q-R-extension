@@ -37,9 +37,11 @@ assert.deepEqual(LESSON_STEPS.map((step) => step.id), [
 ])
 assert.equal(LESSON_STEPS.length, 10)
 assert.equal(getLessonSteps('zh-CN')[0].name, '预读')
-assert.match(getLessonSteps('zh-CN')[0].question, /标题、副标题、作者和来源已由系统填写，无需重复记录/)
-assert.doesNotMatch(getLessonSteps('zh-CN')[0].question, /请记录标题、副标题、作者、来源/)
-assert.match(getLessonSteps('zh-CN')[0].question, /第一段、最后一段、小标题、图表以及强调内容/)
+assert.equal(getLessonSteps('zh-CN')[0].focus, '观察而不是评价')
+assert.equal(getLessonSteps('zh-CN')[0].question, '文章的标题、来源和首段透露了哪些信息？')
+assert.equal(getLessonSteps('zh-CN')[0].instruction, '先看标题、来源和首段，只记录观察，不要急着评价。')
+assert.equal(getLessonSteps('zh-CN')[1].question, '文章如何展开？记录段落结构和代表性句子。')
+assert.equal(getLessonSteps('zh-CN')[2].question, '逐段回答：说了什么？为什么？想告诉你什么？')
 assert.equal(getLessonSteps('zh-CN')[2].name, '分层阅读·3句法')
 assert.match(getLessonSteps('zh-CN')[2].hint, /原文内容和你的推断/)
 assert.equal(getLessonSteps('zh-CN')[5].name, '识别隐藏假设')
@@ -101,7 +103,7 @@ assert.equal(firstRoundDimensions.cause.properties.score.type, 'null')
 const threeSentenceGrade = buildGradePrompt('第一句。\n\n第二段。', '标题', { subtitle: '', author: '', source: '' }, {
   ...session,
   currentStep: 2,
-  currentQuestion: '逐段回答？',
+  currentQuestion: '请阅读第4段和第5段，用自己的话概括。',
   draft: formatThreeSentenceAnswer([
     { paragraph: 1, what: '第一段说了事实', why: '原文未提供', takeaway: '第一段先交代事实' },
     { paragraph: 2, what: '第二段补充说明', why: '因为第二段给出依据', takeaway: '第二段推进说明' },
@@ -113,22 +115,40 @@ const threeSentenceGrade = buildGradePrompt('第一句。\n\n第二段。', '标
 })
 const threeSentenceInput = JSON.parse(threeSentenceGrade.user)
 assert.equal(threeSentenceInput.stepId, 'three-sentence')
+assert.equal(threeSentenceInput.question, getLessonSteps('zh-CN')[2].question)
 assert.equal(threeSentenceInput.threeSentenceDrafts[0].why, '原文未提供')
 
 const referencePrompt = buildReferenceAnswerPrompt('第一段。\n\n第二段。', '标题', { subtitle: '', author: '', source: '' }, {
   stepIndex: 2,
   stepId: 'three-sentence',
-  question: '逐段回答？',
+  question: '请阅读第4段和第5段，用自己的话概括。',
   answer: '学生回答。',
   submittedAt: '2026-01-01T00:00:00.000Z',
 })
 assert.equal(referencePrompt.responseFormat.json_schema.name, 'training_reference_answer')
+assert.equal(JSON.parse(referencePrompt.user).question, getLessonSteps('zh-CN')[2].question)
+assert.match(referencePrompt.system, /逐字连续复制/)
+assert.doesNotMatch(referencePrompt.system, /永远不输出文章摘要、标准答案/)
+assert.match(referencePrompt.system, /明确允许输出参考答案/)
 assert.equal(JSON.parse(referencePrompt.user).studentAnswer, '学生回答。')
 const referenceAnswer = {
   answer: '参考答案只根据原文整理段落内容，并明确区分原文依据与阅读推断。',
   sources: [{ paragraph: 1, quote: '第一段。', comment: '这段提供了参考答案的原文依据。' }],
 }
 assert.doesNotThrow(() => validateAiReferenceAnswer(referenceAnswer, '第一段。\n\n第二段。'))
+assert.doesNotThrow(() => validateAiReferenceAnswer({
+  ...referenceAnswer,
+  sources: [{ ...referenceAnswer.sources[0], quote: '第一段 内容' }],
+}, '第一段\n内容\n\n第二段'))
+assert.doesNotThrow(() => validateAiReferenceAnswer({
+  answer: '这是一个包含正常问句、但仍然完全依据原文的参考答案？',
+  sources: [{ paragraph: 1, quote: '第一段。', comment: '这段为什么重要？因为它提供了原文依据。' }],
+}, '第一段。\n\n第二段。'))
+const longSourceQuote = '原文'.repeat(100)
+assert.doesNotThrow(() => validateAiReferenceAnswer({
+  answer: '这是一个引用较长原文片段、但仍然完全依据文章内容整理的参考答案。',
+  sources: [{ paragraph: 1, quote: longSourceQuote, comment: '这段提供了较长的原文依据。' }],
+}, `${longSourceQuote}\n\n第二段。`))
 assert.throws(() => validateAiReferenceAnswer({ ...referenceAnswer, sources: [{ ...referenceAnswer.sources[0], quote: '不存在的引文。' }] }, '第一段。\n\n第二段。'))
 
 const feedback = {
@@ -180,8 +200,22 @@ const legacy = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 }
 storage[TRAINING_SESSIONS_KEY] = { version: 1, items: [legacy] }
+storage[TRAINING_SESSIONS_V2_KEY] = {
+  version: 2,
+  items: [{
+    articleId: 'stale-opening',
+    flowId: 'reading-10',
+    currentStep: 0,
+    currentQuestion: '请记录第一段、最后一段、小标题、图表以及强调内容带来的观察。',
+    draft: '',
+    turns: [],
+    startedAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }],
+}
 assert.equal(normalizeTrainingSessionStore(storage[TRAINING_SESSIONS_KEY]).items[0].flowId, 'legacy-8')
 assert.equal(normalizeTrainingSessionStoreV2(undefined).items.length, 0)
+assert.equal((await getTrainingSession('stale-opening'))?.currentQuestion, getLessonSteps('zh-CN')[0].question)
 
 const visibleLegacy = await getTrainingSession('legacy')
 assert.equal(visibleLegacy?.flowId, 'legacy-8')

@@ -64,7 +64,7 @@ async function sendExtensionMessage<T>(
 }
 
 function errorMessage(error: ExtensionError) {
-  return `${error.message}（${error.code}）`
+  return `${error.message}${error.detail ? ` ${error.detail}` : ''}（${error.code}）`
 }
 
 function App() {
@@ -1190,17 +1190,22 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     if (!turn.feedback || !aiConfigured || referenceAnswerBusy) return
     setReferenceAnswerBusy(true)
     setError('')
-    const response = await sendExtensionMessage<TrainingSession>({
-      type: 'ai-reference-answer',
-      articleId,
-      submittedAt: turn.submittedAt,
-    })
-    setReferenceAnswerBusy(false)
-    if (!response.ok) {
-      setError(errorMessage(response.error))
-      return
+    try {
+      const response = await sendExtensionMessage<TrainingSession>({
+        type: 'ai-reference-answer',
+        articleId,
+        submittedAt: turn.submittedAt,
+      })
+      if (!response.ok) {
+        setError(errorMessage(response.error))
+        return
+      }
+      applySession(response.data)
+    } catch {
+      setError(t('feedback.referenceAnswerFailed'))
+    } finally {
+      setReferenceAnswerBusy(false)
     }
-    applySession(response.data)
   }
 
   const rewind = async () => {
@@ -1248,6 +1253,11 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
   const localizedSteps = getLessonSteps(locale)
   const legacyReadOnly = session?.flowId === 'legacy-8'
   const step = session && !legacyReadOnly ? localizedSteps[Math.min(session.currentStep, localizedSteps.length - 1)] : null
+  const progressTotal = legacyReadOnly ? 8 : LESSON_STEPS.length
+  const progressValue = session ? Math.min(session.currentStep + 1, progressTotal) : 0
+  const displayedQuestion = session && step && (session.currentStep === 2 || (session.currentStep === 0 && session.turns.length === 0 && !session.draft.trim()))
+    ? step.question
+    : session?.currentQuestion || step?.question || ''
   const latestTurn = session?.turns.at(-1)
   const completed = session?.flowId === 'reading-10' && session.currentStep === LESSON_STEPS.length
   const transition = latestTurn?.feedback && latestTurn.stepId === 'preview'
@@ -1257,14 +1267,22 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
       : ''
 
   return (
-    <section className="coach-card" aria-label={t('coach.aria')}>
+    <section className={session ? 'coach-card coach-card-active' : 'coach-card'} aria-label={t('coach.aria')}>
       <div className="coach-heading">
-        <div>
-          <span className="section-kicker">{aiConfigured ? t('coach.aiLabel') : t('coach.localLabel')}</span>
-          <h2>{t('coach.heading')}</h2>
-          <p>{aiConfigured ? t('coach.aiDescription') : t('coach.localDescription')}</p>
+        <div className="coach-title">
+          <img className="coach-logo" src="/icons/icon32.png" alt="" aria-hidden="true" />
+          <div>
+            <span className="section-kicker">{aiConfigured ? t('coach.aiLabel') : t('coach.localLabel')}</span>
+            <h2>{t('coach.heading')}</h2>
+            <p>{aiConfigured ? t('coach.aiDescription') : t('coach.localDescription')}</p>
+          </div>
         </div>
-        {session && <span className="progress-pill">{Math.min(session.currentStep, legacyReadOnly ? 8 : LESSON_STEPS.length)} / {legacyReadOnly ? 8 : LESSON_STEPS.length}</span>}
+        {session && (
+          <div className="coach-progress" role="progressbar" aria-valuemin={1} aria-valuemax={progressTotal} aria-valuenow={progressValue} aria-label={`${progressValue} / ${progressTotal}`}>
+            <strong>{progressValue} / {progressTotal}</strong>
+            <span className="progress-track"><span style={{ width: `${(progressValue / progressTotal) * 100}%` }} /></span>
+          </div>
+        )}
       </div>
 
       {!loaded ? (
@@ -1310,7 +1328,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
           </div>
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} referenceAnswer={latestTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(latestTurn)} />}
           {transition && <p className="round-transition">{transition}</p>}
-          <h3>{session.currentQuestion || step.question}</h3>
+          <h3>{displayedQuestion}</h3>
           <p className="round-instruction">{step.instruction}</p>
           <button className="text-button hint-toggle" type="button" onClick={() => setHintVisible((visible) => !visible)}>{hintVisible ? t('coach.hideHint') : t('coach.showHint')}</button>
           {hintVisible && <p className="round-hint">{step.hint}</p>}

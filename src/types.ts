@@ -176,6 +176,7 @@ export type ErrorCode =
 export type ExtensionError = {
   code: ErrorCode
   message: string
+  detail?: string
 }
 
 export type ExtensionMessage =

@@ -16,3 +16,11 @@ export function withTimeout<T>(
     if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId)
   })
 }
+
+export function withResponseTimeout<T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<Response>,
+  parse: (response: Response) => Promise<T> = (response) => response.json() as Promise<T>,
+): Promise<T> {
+  return withTimeout(timeoutMs, async (signal) => parse(await operation(signal)))
+}

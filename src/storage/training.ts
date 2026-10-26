@@ -53,6 +53,10 @@ export function isLegacyTrainingSession(session: TrainingSession | null | undefi
   return session?.flowId === 'legacy-8'
 }
 
+function questionForNextStep(nextStep: number, feedback: AiFeedback, locale: Locale) {
+  return nextStep === 2 ? getLessonSteps(locale)[2]?.question || feedback.nextQuestion : feedback.nextQuestion
+}
+
 export async function startTrainingSession(articleId: string, locale: Locale = 'zh-CN') {
   return trainingMutation(async () => {
     const current = await readTrainingSessionsV2(locale)
@@ -139,7 +143,7 @@ export async function commitTrainingFeedback(articleId: string, feedback: AiFeed
         ...session,
         turns,
         currentStep: nextStep,
-        currentQuestion: feedback.nextQuestion,
+        currentQuestion: questionForNextStep(nextStep, feedback, locale),
         draft: '',
         threeSentenceDrafts: undefined,
         paragraphCursor: undefined,
@@ -158,10 +162,11 @@ export async function commitTrainingFeedback(articleId: string, feedback: AiFeed
     const reinforcement = session.currentStep >= LESSON_STEPS.length
     if (feedback.nextStepId !== getNextLessonStepId(session.currentStep, locale)) return null
     const step = LESSON_STEPS[Math.min(LESSON_STEPS.length - 1, session.currentStep)]
+    const currentQuestion = session.currentStep === 2 ? getLessonSteps(locale)[2]?.question || session.currentQuestion : session.currentQuestion
     const turn = {
       stepIndex: reinforcement ? LESSON_STEPS.length - 1 : session.currentStep,
       stepId: step.id,
-      question: session.currentQuestion,
+      question: currentQuestion,
       answer,
       submittedAt: now,
       ...(session.currentStep === 2 && session.threeSentenceDrafts
@@ -173,7 +178,7 @@ export async function commitTrainingFeedback(articleId: string, feedback: AiFeed
     const updated = {
       ...session,
       currentStep: nextStep,
-      currentQuestion: feedback.nextQuestion,
+      currentQuestion: questionForNextStep(nextStep, feedback, locale),
       draft: '',
       threeSentenceDrafts: undefined,
       paragraphCursor: undefined,
@@ -306,9 +311,10 @@ function isTrainingSession(value: unknown, maxStep: number, expectedFlow: 'legac
 
 function withQuestionDefault(session: TrainingSession, locale: Locale): TrainingSession {
   const steps = session.flowId === 'legacy-8' ? getLegacyLessonSteps(locale) : getLessonSteps(locale)
+  const isUnansweredOpening = session.flowId === 'reading-10' && session.currentStep === 0 && session.turns.length === 0 && !session.draft.trim()
   return {
     ...session,
-    currentQuestion: session.currentQuestion || steps[session.currentStep]?.question || '',
+    currentQuestion: isUnansweredOpening ? steps[0]?.question || '' : session.currentQuestion || steps[session.currentStep]?.question || '',
     draft: session.draft || '',
     ...(session.threeSentenceDrafts ? { threeSentenceDrafts: normalizeThreeSentenceDrafts(session.threeSentenceDrafts) } : {}),
     ...(typeof session.paragraphCursor === 'number' && Number.isInteger(session.paragraphCursor) && session.paragraphCursor >= 0

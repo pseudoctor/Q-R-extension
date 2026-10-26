@@ -29,7 +29,7 @@ import {
   providerById,
   providerEndpoint,
 } from './ai/providers'
-import { withTimeout } from './ai/http'
+import { withResponseTimeout, withTimeout } from './ai/http'
 import {
   readSavedArticles,
   removeSavedArticle,
@@ -74,8 +74,9 @@ type TrainingPageError = ExtensionError | undefined
 function createError(
   code: ErrorCode,
   message: string,
+  detail?: string,
 ): ExtensionResponse<never> {
-  return { ok: false, error: { code, message } }
+  return { ok: false, error: { code, message, ...(detail ? { detail } : {}) } }
 }
 
 function success<T>(data: T): ExtensionResponse<T> {
@@ -362,7 +363,7 @@ async function requestAiJson(
   if (!endpoint) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
 
   try {
-    const response = await withTimeout(AI_REQUEST_TIMEOUT_MS, (signal) => fetch(endpoint, {
+    return await withResponseTimeout(AI_REQUEST_TIMEOUT_MS, (signal) => fetch(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${normalized.apiKey}`,
@@ -381,22 +382,23 @@ async function requestAiJson(
           : {}),
       }),
       signal,
-    }))
-    if (!response.ok) {
-      return createError('AI_REQUEST_FAILED', `模型服务返回 HTTP ${response.status}，请检查模型名称和 API key。`)
-    }
+    }), async (response) => {
+      if (!response.ok) {
+        return createError('AI_REQUEST_FAILED', `模型服务返回 HTTP ${response.status}，请检查模型名称和 API key。`)
+      }
 
-    let payload: unknown
-    try {
-      payload = await response.json()
-    } catch {
-      return createError('AI_RESPONSE_INVALID_JSON', '模型服务返回的内容不是有效 JSON。')
-    }
-    try {
-      return success(parseAiJson(payload))
-    } catch {
-      return createError('AI_RESPONSE_INVALID_JSON', '模型服务没有返回符合要求的 JSON。')
-    }
+      let payload: unknown
+      try {
+        payload = await response.json()
+      } catch {
+        return createError('AI_RESPONSE_INVALID_JSON', '模型服务返回的内容不是有效 JSON。')
+      }
+      try {
+        return success(parseAiJson(payload))
+      } catch {
+        return createError('AI_RESPONSE_INVALID_JSON', '模型服务没有返回符合要求的 JSON。')
+      }
+    })
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       return createError('AI_REQUEST_FAILED', 'AI 请求超时，请稍后重试。')
@@ -651,8 +653,12 @@ async function generateAiReferenceAnswer(articleId: string, submittedAt: string)
   let referenceAnswer
   try {
     referenceAnswer = validateAiReferenceAnswer(completion.data, article.text, article.blocks)
-  } catch {
-    return createError('AI_ANSWER_INVALID', '模型服务返回的参考答案没有通过原文依据校验，请重试。')
+  } catch (error) {
+    return createError(
+      'AI_ANSWER_INVALID',
+      '模型服务返回的参考答案没有通过原文依据校验，请重试。',
+      error instanceof Error ? error.message : undefined,
+    )
   }
   const updated = await saveTrainingReferenceAnswer(articleId, submittedAt, referenceAnswer, locale)
   return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')

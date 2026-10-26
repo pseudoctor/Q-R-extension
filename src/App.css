@@ -12,9 +12,9 @@
 }
 
 .training-shell {
-  width: min(1040px, 100%);
+  width: min(1180px, 100%);
   margin: 0 auto;
-  padding: 54px 32px 84px;
+  padding: 38px 32px 64px;
 }
 
 .settings-shell {
@@ -177,10 +177,10 @@
 }
 
 .training-header p {
-  max-width: 52ch;
-  margin: 18px 0 0;
-  font-size: 16px;
-  line-height: 1.65;
+  max-width: 46ch;
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .settings-header p {
@@ -680,8 +680,8 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 16px;
-  margin-top: 36px;
-  padding: 30px;
+  margin-top: 24px;
+  padding: 24px;
 }
 
 .settings-card {
@@ -697,9 +697,9 @@
 
 .training-workspace.has-coach {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.95fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
   align-items: start;
-  gap: 24px;
+  gap: 20px;
 }
 
 .article-column,
@@ -714,7 +714,7 @@
 .training-workspace.has-coach .coach-card {
   position: sticky;
   top: 24px;
-  margin-top: 36px;
+  margin-top: 24px;
 }
 
 .training-workspace.has-coach .article-preview-content {
@@ -1159,12 +1159,12 @@
 }
 
 .coach-card {
-  max-height: calc(100vh - 48px);
+  max-height: calc(100vh - 36px);
   overflow-y: auto;
-  margin-top: 28px;
+  margin-top: 24px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
-  padding: 30px;
+  padding: 24px;
   background: var(--surface);
   box-shadow: var(--shadow-soft);
 }
@@ -1179,10 +1179,25 @@
   gap: 16px;
 }
 
+.coach-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.coach-logo {
+  display: block;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  object-fit: contain;
+}
+
 .coach-heading h2 {
-  margin: 7px 0 6px;
+  margin: 4px 0;
   color: var(--ink);
-  font-size: 22px;
+  font-size: 20px;
 }
 
 .coach-heading p,
@@ -1190,8 +1205,8 @@
 .coach-complete p {
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .progress-pill {
@@ -1204,18 +1219,59 @@
   font-weight: 800;
 }
 
+.coach-progress {
+  display: grid;
+  flex: none;
+  min-width: 190px;
+  gap: 7px;
+}
+
+.coach-progress strong {
+  color: var(--accent);
+  font-size: 15px;
+  text-align: right;
+}
+
+.progress-track {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line-soft);
+}
+
+.progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.coach-card-active .coach-heading h2,
+.coach-card-active .coach-heading p {
+  display: none;
+}
+
+.coach-card-active .coach-heading .section-kicker {
+  display: block;
+  margin: 0;
+  color: var(--accent);
+  font-size: 22px;
+  letter-spacing: 0.08em;
+}
+
 .coach-start {
-  margin-top: 24px;
+  margin-top: 18px;
 }
 
 .pre-read-list {
   display: grid;
-  gap: 9px;
-  margin: 0 0 20px;
+  gap: 6px;
+  margin: 0 0 18px;
   padding-left: 22px;
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .read-confirmation {
@@ -1234,41 +1290,46 @@
 }
 
 .coach-round {
-  margin-top: 24px;
+  margin-top: 18px;
 }
 
 .round-meta {
+  margin-top: 18px;
+  border-radius: 16px;
+  padding: 16px 18px;
   align-items: baseline;
+  align-items: flex-end;
   color: var(--accent);
+  background: var(--accent-soft);
   font-size: 12px;
 }
 
 .round-meta strong {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 700;
 }
 
 .coach-round h3 {
-  margin: 20px 0 8px;
+  margin: 16px 0 6px;
   color: var(--ink);
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .round-instruction {
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 }
 
 .round-transition {
-  margin: 16px 0 0;
-  padding: 10px 12px;
+  margin: 12px 0 0;
+  padding: 8px 10px;
   border-left: 3px solid var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .hint-toggle {
@@ -1277,13 +1338,13 @@
 }
 
 .round-hint {
-  margin: -4px 0 16px;
+  margin: -4px 0 12px;
   border-left: 3px solid var(--accent);
-  padding: 10px 12px;
+  padding: 8px 10px;
   color: var(--accent);
   background: var(--accent-soft);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .coach-round textarea {

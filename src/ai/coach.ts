@@ -64,6 +64,7 @@ export function buildGradePrompt(
   const expectedNextStepId = getNextLessonStepId(session.currentStep, locale)
   const next = expectedNextStepId ? steps.find((candidate) => candidate.id === expectedNextStepId) : null
   const prediction = preReadingPrediction.trim()
+  const question = session.currentStep === 2 ? step.question : session.currentQuestion
   const reflectionInstruction = session.currentStep === 0 && prediction
     ? translate(locale, 'ai.gradeReflection')
     : ''
@@ -78,7 +79,7 @@ export function buildGradePrompt(
       metadata,
       ...(prediction ? { preReadingPrediction: prediction } : {}),
       paragraphs: numberArticleBlocks(getArticleBlocks(article, blocks)).map(({ paragraph, text }) => ({ paragraph, text })),
-      question: session.currentQuestion,
+      question,
       answer,
       ...(session.currentStep === 2 && session.threeSentenceDrafts
         ? { threeSentenceDrafts: session.threeSentenceDrafts }
@@ -99,9 +100,11 @@ export function buildReferenceAnswerPrompt(
 ) {
   const steps = getLessonSteps(locale)
   const step = steps[Math.min(steps.length - 1, Math.max(0, turn.stepIndex))]
+  const question = turn.stepIndex === 2 ? step.question : turn.question
   return {
-    system: `${translate(locale, 'ai.basePrompt')}
+    system: `${translate(locale, 'ai.referenceBasePrompt')}
 ${translate(locale, 'ai.stepPrefix')}“${step.name}”（${step.focus}，stepId: ${step.id}）。${translate(locale, 'ai.referenceAnswerInstruction')}
+${translate(locale, 'ai.referenceAnswerFormat')}
 ${translate(locale, 'ai.jsonOnly')}`,
     user: JSON.stringify({
       stepId: step.id,
@@ -110,7 +113,7 @@ ${translate(locale, 'ai.jsonOnly')}`,
       title,
       metadata,
       paragraphs: numberArticleBlocks(getArticleBlocks(article, blocks)).map(({ paragraph, text }) => ({ paragraph, text })),
-      question: turn.question,
+      question,
       studentAnswer: turn.answer,
     }),
     responseFormat: buildJsonResponseFormat('training_reference_answer', {
@@ -125,7 +128,7 @@ ${translate(locale, 'ai.jsonOnly')}`,
             type: 'object',
             properties: {
               paragraph: { type: 'integer' },
-              quote: { type: 'string' },
+              quote: { type: 'string', minLength: 2, maxLength: 320 },
               comment: { type: 'string' },
             },
             required: ['paragraph', 'quote', 'comment'],
@@ -279,10 +282,10 @@ export function validateAiReferenceAnswer(
 ): AiReferenceAnswer {
   if (!isRecord(value)) throw new Error('AI 参考答案格式无效。')
   const answer = typeof value.answer === 'string' ? value.answer.trim() : ''
-  if (answer.length < 20 || answer.length > 4_000 || /[？?]/.test(answer)) {
+  if (answer.length < 20 || answer.length > 4_000) {
     throw new Error('AI 参考答案未通过校验。')
   }
-  const sources = validateSources(value.sources, numberArticleBlocks(getArticleBlocks(article, blocks)))
+  const sources = validateSources(value.sources, numberArticleBlocks(getArticleBlocks(article, blocks)), true, 320)
   return { answer, sources }
 }
 
@@ -310,7 +313,7 @@ function validateObservations(value: unknown, answer: string) {
   })
 }
 
-function validateSources(value: unknown, paragraphs: NumberedArticleParagraph[]) {
+function validateSources(value: unknown, paragraphs: NumberedArticleParagraph[], allowQuestions = false, maxQuoteLength = 160) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 3) throw new Error('AI 没有提供有效的原文依据。')
   return value.map((item) => {
     if (!isRecord(item) || typeof item.paragraph !== 'number' || !Number.isInteger(item.paragraph) || item.paragraph < 1 || item.paragraph > paragraphs.length) {
@@ -319,11 +322,17 @@ function validateSources(value: unknown, paragraphs: NumberedArticleParagraph[])
     const quote = typeof item.quote === 'string' ? item.quote.trim() : ''
     const comment = typeof item.comment === 'string' ? item.comment.trim() : ''
     const paragraph = paragraphs.find((candidate) => candidate.paragraph === item.paragraph)
-    if (quote.length < 2 || quote.length > 160 || !paragraph?.text.includes(quote) || !comment || comment.length > 700 || /[？?]/.test(comment)) {
+    const normalizedQuote = normalizeSourceText(quote)
+    const normalizedParagraph = normalizeSourceText(paragraph?.text ?? '')
+    if (normalizedQuote.length < 2 || normalizedQuote.length > maxQuoteLength || !normalizedParagraph.includes(normalizedQuote) || !comment || comment.length > 700 || (!allowQuestions && /[？?]/.test(comment))) {
       throw new Error('AI 原文引用未通过校验。')
     }
     return { paragraph: item.paragraph, quote, comment }
   })
+}
+
+function normalizeSourceText(value: string) {
+  return value.normalize('NFKC').replace(/\s+/g, ' ').trim()
 }
 
 function emptyMetadata(): ArticleMetadata {
