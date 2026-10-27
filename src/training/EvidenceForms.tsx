@@ -1,5 +1,5 @@
 import type { TrainingArticleSnapshot, TrainingFieldAssist, TrainingFieldAssistMode } from '../types'
-import { useI18n } from '../i18n/context'
+import { useI18n } from '../i18n/useI18n'
 import { emptySummaryEvidence, METADATA_FIELDS, METADATA_STATUSES, readMetadataReview, readSummaryEvidence, sourceBlockText } from './evidence'
 import { FieldAssist } from './FieldAssist'
 

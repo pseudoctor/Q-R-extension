@@ -1,5 +1,5 @@
 import type { TrainingFieldAssist, TrainingFieldAssistMode } from '../types'
-import { useI18n } from '../i18n/context'
+import { useI18n } from '../i18n/useI18n'
 
 export function FieldAssist({ fieldId, assist, aiConfigured, busyKey, disabled, showFieldAssist = true, onRequest }: {
   fieldId: string

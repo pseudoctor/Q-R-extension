@@ -74,3 +74,16 @@ pnpm build
 ```
 
 架构决策记录在 `docs/adr/`，扩展的构建产物位于 `dist/`。
+
+## 本地发布准备
+
+商店最终素材位于 `store-assets/`，其中 `*-source.png` 和 `drafts/` 仅作为源文件保留，不会被打包进扩展。发布前运行：
+
+```bash
+pnpm check:store-assets
+pnpm package:extension
+```
+
+`pnpm package:extension` 会先构建并检查 `dist/`、版本同步和商店素材，然后生成 `release/toulmin-reader-extension-v<version>.zip`。`release/` 已加入忽略规则，压缩包不会进入源码提交。
+
+真实 Chrome/Edge 交互和真实模型验收仍需在目标浏览器及已配置的 AI 服务中手工执行；本地脚本不会把模拟结果当作真实验收证据。

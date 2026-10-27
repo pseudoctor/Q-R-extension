@@ -37,7 +37,7 @@ import {
   sanitizeFilename,
 } from './export/reading'
 import { areThreeSentenceDraftsComplete, formatThreeSentenceAnswer, getLessonSteps, isLessonAnswerFormatValid, isStructuredDraftComplete, LESSON_STEPS, STRUCTURED_ANSWER_MAX_LENGTH, structuredFieldsForStep, STRUCTURED_FIELD_DEFINITIONS, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from './training/lessons'
-import { useI18n } from './i18n/context'
+import { useI18n } from './i18n/useI18n'
 import { detectLocale } from './i18n/types'
 import { translate } from './i18n/messages'
 import './App.css'

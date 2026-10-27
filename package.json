@@ -1,13 +1,17 @@
 {
   "name": "toulmin-reader-extension",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint .",
     "preview": "vite preview",
+    "check:extension": "node scripts/check-extension.mjs",
+    "check:store-assets": "node scripts/check-store-assets.mjs",
+    "check:release": "node scripts/check-release.mjs",
+    "package:extension": "pnpm build && pnpm check:extension && pnpm check:release && node scripts/package-extension.mjs",
     "check:article-format": "node --experimental-strip-types scripts/check-article-format.mjs",
     "check:pre-reading": "node --experimental-strip-types scripts/check-pre-reading-prediction.mjs",
     "check:training-flow": "node --experimental-strip-types scripts/check-reading-training-flow.mjs",
