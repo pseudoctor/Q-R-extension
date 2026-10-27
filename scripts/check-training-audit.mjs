@@ -452,6 +452,7 @@ try {
   await test('metadata and summary controls render with all four localized catalogs', async () => {
     const { I18nProvider } = await server.ssrLoadModule('/src/i18n/context.tsx')
     const { MetadataReviewForm, SummaryEvidenceForm } = await server.ssrLoadModule('/src/training/EvidenceForms.tsx')
+    const { FieldAssist } = await server.ssrLoadModule('/src/training/FieldAssist.tsx')
     const m = await server.ssrLoadModule('/src/training/evidence.ts')
     const { translate } = await server.ssrLoadModule('/src/i18n/messages.ts')
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
@@ -463,6 +464,11 @@ try {
         const summaryHtml = renderToStaticMarkup(createElement(I18nProvider, null, createElement(SummaryEvidenceForm, { value: JSON.stringify(m.emptySummaryEvidence('snap')), snapshot: { id: 'snap', blocks: [{ id: 'p', type: 'paragraph', text: 'Source text.' }] }, disabled: false, onChange() {} })))
         assert.equal((summaryHtml.match(/<fieldset/g) ?? []).length, 3)
         assert.ok(summaryHtml.includes(translate(locale, 'coach.summary.checked')))
+        const assistProps = { fieldId: 'preview.title', aiConfigured: true, busyKey: null, disabled: false, onRequest() {} }
+        const hiddenAssistHtml = renderToStaticMarkup(createElement(I18nProvider, null, createElement(FieldAssist, { ...assistProps, showFieldAssist: false })))
+        assert.equal(hiddenAssistHtml, '')
+        const visibleAssistHtml = renderToStaticMarkup(createElement(I18nProvider, null, createElement(FieldAssist, { ...assistProps, showFieldAssist: true })))
+        assert.ok(visibleAssistHtml.includes(translate(locale, 'coach.fieldAssist.hint')))
       }
     } finally {
       if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor)

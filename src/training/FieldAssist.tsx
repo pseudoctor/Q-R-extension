@@ -1,15 +1,17 @@
 import type { TrainingFieldAssist, TrainingFieldAssistMode } from '../types'
 import { useI18n } from '../i18n/context'
 
-export function FieldAssist({ fieldId, assist, aiConfigured, busyKey, disabled, onRequest }: {
+export function FieldAssist({ fieldId, assist, aiConfigured, busyKey, disabled, showFieldAssist = true, onRequest }: {
   fieldId: string
   assist?: TrainingFieldAssist
   aiConfigured: boolean
   busyKey: string | null
   disabled: boolean
+  showFieldAssist?: boolean
   onRequest: (fieldId: string, mode: TrainingFieldAssistMode) => void
 }) {
   const { t } = useI18n()
+  if (!showFieldAssist) return null
   const hintBusy = busyKey === `${fieldId}:hint`
   const referenceBusy = busyKey === `${fieldId}:reference`
   return <div className="field-assist">

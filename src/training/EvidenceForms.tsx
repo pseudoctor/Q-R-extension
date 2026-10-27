@@ -7,10 +7,11 @@ type FieldAssistFormProps = {
   aiConfigured: boolean
   fieldAssists: Record<string, TrainingFieldAssist>
   fieldAssistBusy: string | null
+  showFieldAssist: boolean
   onRequestFieldAssist: (fieldId: string, mode: TrainingFieldAssistMode) => void
 }
 
-export function MetadataReviewForm({ value, disabled, onChange, aiConfigured = false, fieldAssists = {}, fieldAssistBusy = null, onRequestFieldAssist = () => undefined }: { value: string; disabled: boolean; onChange: (value: string) => void } & Partial<FieldAssistFormProps>) {
+export function MetadataReviewForm({ value, disabled, onChange, aiConfigured = false, fieldAssists = {}, fieldAssistBusy = null, showFieldAssist = true, onRequestFieldAssist = () => undefined }: { value: string; disabled: boolean; onChange: (value: string) => void } & Partial<FieldAssistFormProps>) {
   const { t } = useI18n()
   const review = readMetadataReview(value)
   if (!review) return <p role="alert">{t('coach.structuredIncomplete')}</p>
@@ -21,9 +22,9 @@ export function MetadataReviewForm({ value, disabled, onChange, aiConfigured = f
         <legend>{t(`coach.field.${field}`)}</legend>
         <div className="structured-field-block">
           <label className="structured-field"><span>{t('coach.metadata.status')}</span><select value={review.fields[field].status} onChange={(event) => onChange(JSON.stringify({ ...review, reviewed: false, fields: { ...review.fields, [field]: { ...review.fields[field], status: event.target.value } } }))}>{METADATA_STATUSES.map((status) => <option key={status} value={status}>{t(`coach.metadata.${status}`)}</option>)}</select></label>
-          <FieldAssist fieldId={`preview.metadata.status:${field}`} assist={fieldAssists[`preview.metadata.status:${field}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+          <FieldAssist fieldId={`preview.metadata.status:${field}`} assist={fieldAssists[`preview.metadata.status:${field}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} showFieldAssist={showFieldAssist} onRequest={onRequestFieldAssist} />
         </div>
-        {review.fields[field].status === 'found' && <div className="structured-field-block"><label className="structured-field"><span>{t(`coach.field.${field}`)}</span><input value={review.fields[field].value} maxLength={240} onChange={(event) => onChange(JSON.stringify({ ...review, reviewed: false, fields: { ...review.fields, [field]: { ...review.fields[field], value: event.target.value } } }))} /></label><FieldAssist fieldId={`preview.metadata.value:${field}`} assist={fieldAssists[`preview.metadata.value:${field}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} /></div>}
+        {review.fields[field].status === 'found' && <div className="structured-field-block"><label className="structured-field"><span>{t(`coach.field.${field}`)}</span><input value={review.fields[field].value} maxLength={240} onChange={(event) => onChange(JSON.stringify({ ...review, reviewed: false, fields: { ...review.fields, [field]: { ...review.fields[field], value: event.target.value } } }))} /></label><FieldAssist fieldId={`preview.metadata.value:${field}`} assist={fieldAssists[`preview.metadata.value:${field}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} showFieldAssist={showFieldAssist} onRequest={onRequestFieldAssist} /></div>}
       </fieldset>)}
     </details>
     <section className="metadata-review-summary" aria-label={t('coach.metadata.heading')}>
@@ -49,7 +50,7 @@ export function MetadataReviewForm({ value, disabled, onChange, aiConfigured = f
   </div>
 }
 
-export function SummaryEvidenceForm({ value, snapshot, disabled, onChange, aiConfigured = false, fieldAssists = {}, fieldAssistBusy = null, onRequestFieldAssist = () => undefined }: { value: string; snapshot: TrainingArticleSnapshot; disabled: boolean; onChange: (value: string) => void } & Partial<FieldAssistFormProps>) {
+export function SummaryEvidenceForm({ value, snapshot, disabled, onChange, aiConfigured = false, fieldAssists = {}, fieldAssistBusy = null, showFieldAssist = true, onRequestFieldAssist = () => undefined }: { value: string; snapshot: TrainingArticleSnapshot; disabled: boolean; onChange: (value: string) => void } & Partial<FieldAssistFormProps>) {
   const { t } = useI18n()
   const evidence = readSummaryEvidence(value) ?? emptySummaryEvidence(snapshot.id)
   const update = (index: number, patch: Partial<(typeof evidence.points)[number]>) => onChange(JSON.stringify({ ...evidence, checked: false, points: evidence.points.map((point, i) => i === index ? { ...point, ...patch } : point) }))
@@ -58,9 +59,9 @@ export function SummaryEvidenceForm({ value, snapshot, disabled, onChange, aiCon
       const block = snapshot.blocks.find((item) => item.id === point.blockId)
       return <fieldset key={index} disabled={disabled}>
         <legend>{t('coach.threePointLabel', { number: index + 1 })} · {t('coach.field.threePointSources')}</legend>
-        <div className="structured-field-block"><label className="structured-field"><span>{t('coach.applicability.source')}</span><select value={point.blockId} onChange={(event) => update(index, { blockId: event.target.value })}><option value="">—</option>{snapshot.blocks.filter((item) => item.id && sourceBlockText(item)).map((item, sourceIndex) => <option key={item.id} value={item.id}>{sourceIndex + 1}. {sourceBlockText(item).slice(0, 90)}</option>)}</select></label><FieldAssist fieldId={`threePoints.evidence.source:${index + 1}`} assist={fieldAssists[`threePoints.evidence.source:${index + 1}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} /></div>
+        <div className="structured-field-block"><label className="structured-field"><span>{t('coach.applicability.source')}</span><select value={point.blockId} onChange={(event) => update(index, { blockId: event.target.value })}><option value="">—</option>{snapshot.blocks.filter((item) => item.id && sourceBlockText(item)).map((item, sourceIndex) => <option key={item.id} value={item.id}>{sourceIndex + 1}. {sourceBlockText(item).slice(0, 90)}</option>)}</select></label><FieldAssist fieldId={`threePoints.evidence.source:${index + 1}`} assist={fieldAssists[`threePoints.evidence.source:${index + 1}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} showFieldAssist={showFieldAssist} onRequest={onRequestFieldAssist} /></div>
         {block && <details><summary>{t('coach.summary.locate')}</summary><p>{sourceBlockText(block)}</p></details>}
-        <div className="structured-field-block"><label className="structured-field"><span>{t('coach.applicability.quote')}</span><textarea maxLength={320} value={point.quote} onChange={(event) => update(index, { quote: event.target.value })} /></label><FieldAssist fieldId={`threePoints.evidence.quote:${index + 1}`} assist={fieldAssists[`threePoints.evidence.quote:${index + 1}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} /></div>
+        <div className="structured-field-block"><label className="structured-field"><span>{t('coach.applicability.quote')}</span><textarea maxLength={320} value={point.quote} onChange={(event) => update(index, { quote: event.target.value })} /></label><FieldAssist fieldId={`threePoints.evidence.quote:${index + 1}`} assist={fieldAssists[`threePoints.evidence.quote:${index + 1}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} showFieldAssist={showFieldAssist} onRequest={onRequestFieldAssist} /></div>
         {point.quote && (!block || !sourceBlockText(block).includes(point.quote.trim())) && <p role="alert">{t('coach.summary.invalidQuote')}</p>}
       </fieldset>
     })}
