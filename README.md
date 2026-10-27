@@ -158,3 +158,11 @@ release/toulmin-reader-extension-v<version>.zip
 
 - [pseudoctor](https://github.com/pseudoctor) — 项目维护与产品决策
 - Codex (OpenAI) — 实现协助、安全审查修复、测试和文档支持
+
+## 支持项目
+
+如果问读对你有帮助，欢迎自愿支持项目维护。打赏不提供付费服务、优先支持或技术支持承诺。
+
+| 支付宝 | PayPal |
+| --- | --- |
+| ![支付宝打赏二维码](public/assets/donate-alipay.jpg) | ![PayPal 打赏二维码](public/assets/donate-paypal.jpg) |
