@@ -711,6 +711,10 @@
   align-self: stretch;
 }
 
+.mobile-pane-toggle {
+  display: none;
+}
+
 .training-workspace.has-coach .coach-card {
   position: sticky;
   top: 24px;
@@ -1452,6 +1456,59 @@
   line-height: 1.5;
 }
 
+.review-required {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+
+.review-required p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.review-required pre {
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.prior-context {
+  margin: 12px 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 78%, var(--accent-soft));
+  font-size: 12px;
+}
+
+.prior-context summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.prior-context strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink);
+}
+
+.prior-context p {
+  margin: 5px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
 .hint-toggle {
   margin: -6px 0 12px;
   padding: 0;
@@ -1465,6 +1522,91 @@
   background: var(--accent-soft);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.structured-training-form {
+  display: grid;
+  gap: 12px;
+}
+
+.structured-training-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.structured-field-list {
+  display: grid;
+  gap: 12px;
+}
+
+.three-points-form {
+  display: grid;
+  gap: 12px;
+}
+
+.three-points-field {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.three-points-field input {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.three-points-field small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.structured-field {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.structured-field input,
+.structured-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 11px;
+  color: var(--ink);
+  background: var(--surface-muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.65;
+  outline: none;
+}
+
+.structured-field input {
+  min-height: 42px;
+}
+
+.structured-field textarea {
+  resize: vertical;
+}
+
+.structured-field input:focus,
+.structured-field textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .coach-round textarea {
@@ -1555,6 +1697,22 @@
   justify-content: flex-end;
 }
 
+.paragraph-selection {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.paragraph-selection input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .round-footer {
   margin-top: 12px;
 }
@@ -1568,6 +1726,12 @@
 .round-footer span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.save-status {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .training-history {
@@ -2047,8 +2211,47 @@
 }
 
 @media (max-width: 960px) {
+  .mobile-pane-toggle {
+    display: flex;
+    gap: 6px;
+    margin: 18px 0 0;
+    padding: 4px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--surface-muted);
+  }
+
+  .mobile-pane-toggle button {
+    flex: 1;
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 12px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .mobile-pane-toggle button.active {
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: var(--shadow-soft);
+  }
+
   .training-workspace.has-coach {
     display: block;
+  }
+
+  .training-workspace.has-coach.mobile-pane-article .coach-column,
+  .training-workspace.has-coach.mobile-pane-training .article-column {
+    display: none;
+  }
+
+  .training-workspace.has-coach .article-column,
+  .training-workspace.has-coach .coach-column {
+    max-height: calc(100vh - 180px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .training-workspace.has-coach .coach-card {

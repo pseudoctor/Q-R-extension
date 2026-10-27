@@ -14,7 +14,7 @@ import type {
   StorageState,
   TrainingSession,
 } from './types'
-import { getArticleBlocks, normalizeArticleBlocks, numberArticleBlocks } from './articles/format'
+import { createTrainingArticleSnapshot, getArticleBlocks, normalizeArticleBlocks, numberArticleBlocks } from './articles/format'
 import {
   buildGradePrompt,
   buildReferenceAnswerPrompt,
@@ -38,12 +38,24 @@ import {
 } from './storage/articles'
 import {
   commitTrainingFeedback,
+  advanceTrainingSession,
+  beginTrainingRequest,
+  confirmTrainingStep,
+  createTrainingRequestId,
+  editTrainingTurn,
+  reviseTrainingTurn,
+  finishTrainingRequest,
+  freezeTrainingAnswer,
+  getTrainingHistory,
+  getTrainingRequestSession,
   getTrainingSession,
+  isHistoricalTrainingSession,
   isLegacyTrainingSession,
   removeTrainingSession,
   resetTrainingSession,
   rewindTrainingSession,
   saveTrainingDraft,
+  saveTrainingReinforcement,
   saveTrainingReferenceAnswer,
   setTrainingStep,
   setTrainingQuestion,
@@ -52,7 +64,8 @@ import {
 import { readAiSettings, writeAiSettings } from './storage/ai'
 import { readLocale, readTestMode, writeLocale, writeTestMode } from './storage/preferences'
 import { translate } from './i18n/messages'
-import { areThreeSentenceDraftsComplete, isLessonAnswerFormatValid, LESSON_STEPS, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from './training/lessons'
+import { isTrainingDraftValid } from './training/lessons'
+import { LESSON_STEPS } from './training/lessons'
 
 const TRAINING_PAGE = 'training.html'
 const PRE_READING_PREDICTION_DRAFT_KEY = 'preReadingPredictionDraft'
@@ -583,10 +596,11 @@ async function startAiTraining(articleId: string): Promise<ExtensionResponse<Tra
   const article = await getArticle(articleId)
   if (!article) return createError('INVALID_REQUEST', '没有找到这篇本地文章。')
 
-  const session = await startTrainingSession(articleId, locale)
+  const articleSnapshot = createTrainingArticleSnapshot(article)
+  const session = await startTrainingSession(articleId, locale, articleSnapshot)
   if (session.currentStep === 0 || session.currentStep >= LESSON_STEPS.length) return success(session)
-  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
-  const prompt = buildStartPrompt(article.text, article.title, article.metadata, session.currentStep, article.preReadingPrediction, locale, article.blocks)
+  if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
+  const prompt = buildStartPrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, session.currentStep, article.preReadingPrediction, locale, trainingSourceBlocks(article, session))
   const completion = await requestAiJson(await readAiSettings(), prompt)
   if (!completion.ok) return createError(completion.error.code, completion.error.message)
 
@@ -600,38 +614,78 @@ async function startAiTraining(articleId: string): Promise<ExtensionResponse<Tra
   return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
 }
 
-async function gradeAiTraining(articleId: string): Promise<ExtensionResponse<TrainingSession>> {
+async function gradeAiTraining(articleId: string, answerVersionId?: string, sessionId?: string): Promise<ExtensionResponse<TrainingSession>> {
   const locale = await readLocale()
   const article = await getArticle(articleId)
   if (!article) return createError('INVALID_REQUEST', '没有找到这篇本地文章。')
 
   const session = await getTrainingSession(articleId, locale)
-  const legacyTurn = session?.turns.at(-1)
-  const draft = session?.draft.trim() || (!legacyTurn?.feedback ? legacyTurn?.answer.trim() : '')
-  if (!session || !draft) return createError('INVALID_REQUEST', '还没有可评分的回答。')
-  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
+  if (!session) return createError('INVALID_REQUEST', '还没有可评分的回答。')
+  if (sessionId && sessionId !== session.sessionId) return createError('TRAINING_CONFLICT', '训练会话已变化。')
+  if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
+  const targetVersionId = answerVersionId ?? session.answerVersionId
+  if (!targetVersionId) return createError('TRAINING_CONFLICT', '评分前需要先保存并冻结当前答案版本。')
+  const frozen = session.answerVersions?.find((version) => version.id === targetVersionId)
+  if (!frozen) return createError('TRAINING_CONFLICT', '没有找到冻结的答案版本。')
+  if (frozen.feedback) return success(session)
 
   const promptSession: TrainingSession = {
     ...session,
-    draft,
-    currentStep: session.draft.trim() ? session.currentStep : legacyTurn?.stepIndex ?? session.currentStep,
-    currentQuestion: session.draft.trim() ? session.currentQuestion : legacyTurn?.question ?? session.currentQuestion,
+    answerVersionId: targetVersionId,
+    draft: frozen.answer,
+    structuredDraft: frozen.structuredDraft,
+    importantParagraphs: frozen.importantParagraphs,
+    threeSentenceDrafts: frozen.threeSentenceDrafts,
+    currentStep: frozen.stepIndex,
+    currentStepId: frozen.stepId,
+    currentQuestion: LESSON_STEPS[frozen.stepIndex]?.question ?? '',
   }
-  if (!isTrainingAnswerValid(article, promptSession)) {
+  const expectedAnswer = {
+    sessionId: session.sessionId,
+    draftRevision: session.draftRevision,
+    draft: frozen.answer,
+    answerVersionId: targetVersionId,
+  }
+  const requestId = createTrainingRequestId('grade', session.sessionId, promptSession.currentStepId, targetVersionId)
+  const request = await beginTrainingRequest(articleId, {
+    id: requestId,
+    kind: 'grade',
+    sessionId: session.sessionId ?? '',
+    stepId: promptSession.currentStepId ?? '',
+    answerVersionId: targetVersionId,
+  }, locale)
+  if (!request) return createError('TRAINING_CONFLICT', '评分请求对应的答案版本已不存在，请重新保存后再试。')
+  if (!request.shouldRun) {
+    if (request.request.status === 'succeeded') return success(request.session)
+    if (request.request.status === 'stale') return createError('TRAINING_CONFLICT', '这次评分已过期，请使用当前答案重新提交。')
+    return createError('TRAINING_CONFLICT', '这次评分请求正在处理中，请稍后查看结果。')
+  }
+  if (!isTrainingAnswerValid(article, promptSession, locale)) {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: 'TRAINING_ANSWER_FORMAT_INVALID', message: '回答没有满足当前训练步骤要求。' })
     return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
   }
-  const prompt = buildGradePrompt(article.text, article.title, article.metadata, promptSession, article.preReadingPrediction, locale, article.blocks)
+  const sourceBlocks = trainingSourceBlocks(article, promptSession)
+  const prompt = buildGradePrompt(promptSession.articleSnapshot?.text ?? article.text, promptSession.articleSnapshot?.title ?? article.title, promptSession.articleSnapshot?.metadata ?? article.metadata, promptSession, article.preReadingPrediction, locale, sourceBlocks)
   const completion = await requestAiJson(await readAiSettings(), prompt)
-  if (!completion.ok) return createError(completion.error.code, completion.error.message)
+  if (!completion.ok) {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: completion.error.code, message: completion.error.message })
+    return createError(completion.error.code, completion.error.message)
+  }
 
   let feedback
   try {
-    feedback = validateAiFeedback(completion.data, article.text, draft, article.blocks, promptSession.currentStep, locale)
+    feedback = validateAiFeedback(completion.data, promptSession.articleSnapshot?.text ?? article.text, frozen.answer, sourceBlocks, promptSession.currentStep, locale, frozen.importantParagraphs)
   } catch {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: 'AI_FEEDBACK_INVALID', message: '模型服务返回的评分没有通过安全校验，请重试。' })
     return createError('AI_FEEDBACK_INVALID', '模型服务返回的评分没有通过安全校验，请重试。')
   }
-  const updated = await commitTrainingFeedback(articleId, feedback, locale)
-  return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
+  const updated = await commitTrainingFeedback(articleId, feedback, locale, expectedAnswer)
+  if (!updated) {
+    await finishTrainingRequest(articleId, requestId, 'stale', locale)
+    return createError('TRAINING_CONFLICT', '回答在评分期间发生了变化，请重新保存后再评分。')
+  }
+  const completed = await finishTrainingRequest(articleId, requestId, 'succeeded', locale)
+  return success(await getTrainingSession(articleId, locale) ?? completed ?? updated)
 }
 
 async function generateAiReferenceAnswer(articleId: string, submittedAt: string): Promise<ExtensionResponse<TrainingSession>> {
@@ -639,46 +693,85 @@ async function generateAiReferenceAnswer(articleId: string, submittedAt: string)
   const article = await getArticle(articleId)
   const session = await getTrainingSession(articleId, locale)
   if (!article || !session) return createError('INVALID_REQUEST', '没有找到这次训练。')
-  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
+  if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
 
   const turn = session.turns.find((candidate) => candidate.submittedAt === submittedAt && candidate.feedback)
   if (!turn?.feedback) return createError('INVALID_REQUEST', '请先完成本轮评分，再生成参考答案。')
   if (turn.referenceAnswer) return success(session)
 
+  const requestId = createTrainingRequestId('reference', session.sessionId, turn.stepId, turn.answerVersionId ?? submittedAt)
+  const request = await beginTrainingRequest(articleId, {
+    id: requestId,
+    kind: 'reference',
+    sessionId: session.sessionId ?? '',
+    stepId: turn.stepId ?? `step-${turn.stepIndex}`,
+    ...(turn.answerVersionId ? { answerVersionId: turn.answerVersionId } : {}),
+  }, locale)
+  if (!request) return createError('TRAINING_CONFLICT', '参考答案对应的答案版本已不存在，请重新评分。')
+  if (!request.shouldRun) {
+    if (request.request.status === 'succeeded') return success(request.session)
+    if (request.request.status === 'stale') return createError('TRAINING_CONFLICT', '参考答案请求已过期，请重新评分。')
+    return createError('TRAINING_CONFLICT', '参考答案请求正在处理中，请稍后查看结果。')
+  }
+
   const completion = await requestAiJson(
     await readAiSettings(),
-    buildReferenceAnswerPrompt(article.text, article.title, article.metadata, turn, locale, article.blocks),
+    buildReferenceAnswerPrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, turn, locale, trainingSourceBlocks(article, session)),
   )
-  if (!completion.ok) return createError(completion.error.code, completion.error.message)
+  if (!completion.ok) {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: completion.error.code, message: completion.error.message })
+    return createError(completion.error.code, completion.error.message)
+  }
 
   let referenceAnswer
   try {
-    referenceAnswer = validateAiReferenceAnswer(completion.data, article.text, article.blocks)
+    referenceAnswer = validateAiReferenceAnswer(completion.data, session.articleSnapshot?.text ?? article.text, trainingSourceBlocks(article, session), { stepIndex: turn.stepIndex, importantParagraphs: turn.importantParagraphs })
   } catch (error) {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: 'AI_ANSWER_INVALID', message: '模型服务返回的参考答案没有通过原文依据校验，请重试。' })
     return createError(
       'AI_ANSWER_INVALID',
       '模型服务返回的参考答案没有通过原文依据校验，请重试。',
       error instanceof Error ? error.message : undefined,
     )
   }
-  const updated = await saveTrainingReferenceAnswer(articleId, submittedAt, referenceAnswer, locale)
-  return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
+  const updated = await saveTrainingReferenceAnswer(articleId, submittedAt, referenceAnswer, locale, { sessionId: session.sessionId, answerVersionId: turn.answerVersionId })
+  if (!updated) {
+    await finishTrainingRequest(articleId, requestId, 'stale', locale)
+    return createError('TRAINING_CONFLICT', '参考答案保存时版本已变化，请重新打开该回合。')
+  }
+  const completed = await finishTrainingRequest(articleId, requestId, 'succeeded', locale)
+  return success(await getTrainingSession(articleId, locale) ?? completed ?? updated)
 }
 
-async function prepareAiBridge(articleId: string): Promise<ExtensionResponse<{ requestId: string; prompt: string }>> {
+async function prepareAiBridge(articleId: string, answerVersionId?: string, sessionId?: string): Promise<ExtensionResponse<{ requestId: string; prompt: string }>> {
   const locale = await readLocale()
   const article = await getArticle(articleId)
-  const session = await getTrainingSession(articleId, locale)
+  const owner = await getTrainingSession(articleId, locale)
+  if (sessionId && owner?.sessionId !== sessionId) return createError('TRAINING_CONFLICT', '训练会话已变化。')
+  const frozen = owner?.answerVersions?.find((version) => version.id === (answerVersionId ?? owner.answerVersionId))
+  if (!owner || !frozen) return createError('TRAINING_CONFLICT', '没有找到冻结的答案版本。')
+  const session: TrainingSession = { ...owner, currentStep: frozen.stepIndex, currentStepId: frozen.stepId, currentQuestion: LESSON_STEPS[frozen.stepIndex]?.question ?? '',
+    draft: frozen.answer, structuredDraft: frozen.structuredDraft, importantParagraphs: frozen.importantParagraphs, threeSentenceDrafts: frozen.threeSentenceDrafts, answerVersionId: frozen.id }
   if (!article || !session || session.draft.trim().length < 5) {
     return createError('INVALID_REQUEST', '请先写下至少 5 个字符的独立回答。')
   }
-  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
-  if (!isTrainingAnswerValid(article, session)) {
+  if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
+  if (!isTrainingAnswerValid(article, session, locale)) {
     return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
   }
 
   const requestId = createBridgeRequestId(articleId, session)
-  const prompt = buildGradePrompt(article.text, article.title, article.metadata, session, article.preReadingPrediction, locale, article.blocks)
+  const request = await beginTrainingRequest(articleId, {
+    id: requestId,
+    kind: 'bridge',
+    sessionId: session.sessionId ?? '',
+    stepId: session.currentStepId ?? `step-${session.currentStep}`,
+    ...(session.answerVersionId ? { answerVersionId: session.answerVersionId } : {}),
+  }, locale)
+  if (!request) return createError('TRAINING_CONFLICT', '桥接请求对应的答案版本已不存在，请重新提交。')
+  if (request.request.status === 'stale') return createError('TRAINING_CONFLICT', '桥接请求已过期，请重新提交当前答案。')
+  const sourceBlocks = trainingSourceBlocks(article, session)
+  const prompt = buildGradePrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, session, article.preReadingPrediction, locale, sourceBlocks)
   return success({
     requestId,
     prompt: `${prompt.system}\n\n${translate(locale, 'ai.bridgeInstruction', { requestId })}\n\n${translate(locale, 'ai.materialInstruction')}\n${prompt.user}`,
@@ -693,13 +786,16 @@ async function importAiFeedback(
   const locale = await readLocale()
   if (raw.length > 30_000) return createError('INVALID_REQUEST', '反馈为空或过长，请粘贴完整 JSON。')
   const article = await getArticle(articleId)
-  const session = await getTrainingSession(articleId, locale)
+  const owner = await getTrainingRequestSession(articleId, requestId, locale)
+  const processedRequest = owner?.aiRequests?.find((request) => request.id === requestId && request.kind === 'bridge')
+  const frozen = owner?.answerVersions?.find((version) => version.id === processedRequest?.answerVersionId)
+  if (!owner || !processedRequest || !frozen) return createError('TRAINING_CONFLICT', '找不到这份反馈对应的请求或答案版本。')
+  const session: TrainingSession = { ...owner, currentStep: frozen.stepIndex, currentStepId: frozen.stepId, draft: frozen.answer, structuredDraft: frozen.structuredDraft, importantParagraphs: frozen.importantParagraphs, threeSentenceDrafts: frozen.threeSentenceDrafts, answerVersionId: frozen.id }
   if (!article || !session) return createError('INVALID_REQUEST', '没有找到这次训练。')
-  if (isLegacyTrainingSession(session)) return trainingReadOnlyError(locale)
-  if (createBridgeRequestId(articleId, session) !== requestId) {
-    return createError('INVALID_REQUEST', '这份反馈不属于当前回答，请重新复制本轮评分请求。')
-  }
-  if (!isTrainingAnswerValid(article, session)) {
+  if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
+  if (processedRequest.status === 'succeeded') return success(await getTrainingSession(articleId, locale) ?? owner)
+  if (processedRequest?.status === 'stale') return createError('TRAINING_CONFLICT', '这份桥接反馈已过期，请重新提交当前答案。')
+  if (!isTrainingAnswerValid(article, session, locale)) {
     return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
   }
 
@@ -708,39 +804,54 @@ async function importAiFeedback(
     const clean = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
     payload = JSON.parse(clean) as unknown
   } catch {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: 'AI_RESPONSE_INVALID_JSON', message: '无法读取 JSON，请只粘贴完整的评分反馈。' })
     return createError('AI_RESPONSE_INVALID_JSON', '无法读取 JSON，请只粘贴完整的评分反馈。')
   }
   if (!isRecord(payload) || payload.requestId !== requestId || !isRecord(payload.feedback)) {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: 'INVALID_REQUEST', message: '反馈 requestId 不匹配，或缺少 feedback 对象。' })
     return createError('INVALID_REQUEST', '反馈 requestId 不匹配，或缺少 feedback 对象。')
   }
 
+  const sourceBlocks = trainingSourceBlocks(article, session)
   let feedback
   try {
-    feedback = validateAiFeedback(payload.feedback, article.text, session.draft.trim(), article.blocks, session.currentStep, locale)
+    feedback = validateAiFeedback(payload.feedback, session.articleSnapshot?.text ?? article.text, session.draft.trim(), sourceBlocks, session.currentStep, locale, session.importantParagraphs)
   } catch {
+    await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: 'AI_FEEDBACK_INVALID', message: '反馈没有通过原文、回答和评分格式校验。' })
     return createError('AI_FEEDBACK_INVALID', '反馈没有通过原文、回答和评分格式校验。')
   }
-  const updated = await commitTrainingFeedback(articleId, feedback, locale)
-  return updated ? success(updated) : createError('INVALID_REQUEST', '训练进度已不存在，请重新开始。')
+  const updated = await commitTrainingFeedback(articleId, feedback, locale, {
+    sessionId: session.sessionId,
+    draftRevision: session.draftRevision,
+    draft: session.draft,
+    answerVersionId: session.answerVersionId,
+  })
+  if (!updated) {
+    const latest = await getTrainingSession(articleId, locale)
+    if (latest?.aiRequests?.some((candidate) => candidate.id === requestId && candidate.status === 'succeeded')) return success(latest)
+    await finishTrainingRequest(articleId, requestId, 'stale', locale)
+    return createError('TRAINING_CONFLICT', '回答在导入期间发生了变化，请重新生成当前请求。')
+  }
+  const completed = await finishTrainingRequest(articleId, requestId, 'succeeded', locale)
+  return success(await getTrainingSession(articleId, locale) ?? completed ?? updated)
 }
 
-function isTrainingAnswerValid(article: SavedArticle, session: TrainingSession) {
-  const maxLength = session.currentStep === 2 ? THREE_SENTENCE_ANSWER_MAX_LENGTH : TRAINING_ANSWER_MAX_LENGTH
-  if (session.draft.trim().length < 5 || session.draft.length > maxLength) return false
+function isTrainingAnswerValid(article: SavedArticle, session: TrainingSession, locale: Locale = 'zh-CN') {
+  if (!isTrainingDraftValid(session, locale)) return false
   if (session.currentStep === 2) {
-    const paragraphNumbers = numberArticleBlocks(getArticleBlocks(article.text, article.blocks)).map(({ paragraph }) => paragraph)
-    return areThreeSentenceDraftsComplete(session.threeSentenceDrafts ?? [], paragraphNumbers)
+    const paragraphNumbers = numberArticleBlocks(trainingSourceBlocks(article, session)).map(({ paragraph }) => paragraph)
+    return (session.importantParagraphs ?? []).every((paragraph) => paragraphNumbers.includes(paragraph))
   }
-  return isLessonAnswerFormatValid(session.currentStep, session.draft)
+  return true
+}
+
+function trainingSourceBlocks(article: SavedArticle, session: TrainingSession) {
+  return session.articleSnapshot?.blocks ?? getArticleBlocks(article.text, article.blocks)
 }
 
 function createBridgeRequestId(articleId: string, session: TrainingSession) {
-  const identity = JSON.stringify([articleId, session.flowId, session.currentStep, session.currentQuestion, session.draft.trim()])
-  let hash = 14695981039346656037n
-  for (const byte of new TextEncoder().encode(identity)) {
-    hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 1099511628211n)
-  }
-  return hash.toString(16).padStart(16, '0')
+  void articleId
+  return createTrainingRequestId('bridge', session.sessionId, session.currentStepId ?? `step-${session.currentStep}`, session.answerVersionId)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -818,43 +929,129 @@ async function handleMessage(
       return success(await toggleSavedArticleFavorite(message.articleId))
     case 'get-training-session':
       return success(await getTrainingSession(message.articleId, await readLocale()))
-    case 'start-training-session':
-      return success(await startTrainingSession(message.articleId, await readLocale()))
+    case 'get-training-history':
+      return success(await getTrainingHistory(message.articleId, await readLocale()))
+    case 'start-training-session': {
+      const locale = await readLocale()
+      const article = await getArticle(message.articleId)
+      return success(await startTrainingSession(
+        message.articleId,
+        locale,
+        article ? createTrainingArticleSnapshot(article) : undefined,
+      ))
+    }
     case 'set-training-step': {
       if (!(await readTestMode())) return createError('INVALID_REQUEST', '请先在设置中开启测试模式。')
       const locale = await readLocale()
       const existing = await getTrainingSession(message.articleId, locale)
-      if (isLegacyTrainingSession(existing)) return trainingReadOnlyError(locale)
-      const session = await setTrainingStep(message.articleId, message.stepIndex, locale)
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      const session = await setTrainingStep(message.articleId, message.stepIndex, locale, {
+        sessionId: message.sessionId,
+        draftRevision: message.draftRevision,
+      })
       return session ? success(session) : createError('INVALID_REQUEST', '没有找到这次训练。')
+    }
+    case 'save-training-reinforcement': {
+      const session = await saveTrainingReinforcement(message.articleId, message.id, message.answer, await readLocale(), message.sessionId)
+      return session ? success(session) : createError('TRAINING_CONFLICT', '巩固记录保存失败，输入已保留，请检查会话和字数后重试。')
     }
     case 'save-training-draft':
       try {
         const existing = await getTrainingSession(message.articleId, await readLocale())
-        if (isLegacyTrainingSession(existing)) return trainingReadOnlyError(await readLocale())
+        if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(await readLocale())
         const session = await saveTrainingDraft(
           message.articleId,
           message.draft,
           await readLocale(),
+          message.structuredDraft,
+          message.importantParagraphs,
           message.threeSentenceDrafts,
           message.paragraphCursor,
+          {
+            sessionId: message.sessionId,
+            stepId: message.stepId,
+            draftRevision: message.draftRevision,
+          },
         )
-        return session ? success(session) : createError('INVALID_REQUEST', '没有找到这次训练。')
+        return session ? success(session) : createError('TRAINING_CONFLICT', '训练记录已在其他标签页更新，请刷新后重试。')
       } catch (error) {
         return createError(
           'INVALID_REQUEST',
           error instanceof Error ? error.message : '草稿保存失败。',
         )
       }
+    case 'freeze-training-answer': {
+      const locale = await readLocale()
+      const existing = await getTrainingSession(message.articleId, locale)
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      const session = await freezeTrainingAnswer(message.articleId, locale, {
+        sessionId: message.sessionId,
+        stepId: message.stepId,
+        draftRevision: message.draftRevision,
+      })
+      return session ? success(session) : createError('TRAINING_CONFLICT', '训练记录已在其他标签页更新，请刷新后重试。')
+    }
+    case 'confirm-training-step': {
+      const locale = await readLocale()
+      const existing = await getTrainingSession(message.articleId, locale)
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      const session = await confirmTrainingStep(message.articleId, locale, {
+        sessionId: message.sessionId,
+        stepId: message.stepId,
+        draftRevision: message.draftRevision,
+      }, message.targetStepId)
+      return session ? success(session) : createError('TRAINING_CONFLICT', '这一步的原答案已变化，请刷新后重新确认。')
+    }
+    case 'continue-training': {
+      const locale = await readLocale()
+      const existing = await getTrainingSession(message.articleId, locale)
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      const article = await getArticle(message.articleId)
+      if (!existing || !article || !isTrainingAnswerValid(article, existing, locale)) {
+        return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
+      }
+      const session = await advanceTrainingSession(message.articleId, locale, {
+        sessionId: message.sessionId,
+        stepId: message.stepId,
+        draftRevision: message.draftRevision,
+        answerVersionId: message.answerVersionId,
+      })
+      return session ? success(session) : createError('TRAINING_CONFLICT', '训练记录已在其他标签页更新，请刷新后重试。')
+    }
     case 'rewind-training-session': {
       const existing = await getTrainingSession(message.articleId, await readLocale())
-      if (isLegacyTrainingSession(existing)) return trainingReadOnlyError(await readLocale())
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(await readLocale())
       const session = await rewindTrainingSession(message.articleId, await readLocale())
       return session ? success(session) : createError('INVALID_REQUEST', '没有可以回退的训练回合。')
     }
-    case 'reset-training-session':
-      await resetTrainingSession(message.articleId, await readLocale())
+    case 'revise-training-turn': {
+      const locale = await readLocale()
+      const existing = await getTrainingSession(message.articleId, locale)
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      const article = await getArticle(message.articleId)
+      const turn = existing?.turns[message.turnIndex]
+      if (!existing || !turn || !article || !message.revision.reason.trim() || message.revision.reason.length > 1000 || !isTrainingAnswerValid(article, { ...existing, ...message.revision, draft: message.revision.answer, currentStep: turn.stepIndex, currentStepId: turn.stepId }, locale)) return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
+      const session = await reviseTrainingTurn(message.articleId, message.turnIndex, message.revision, locale, {
+        sessionId: message.sessionId, draftRevision: message.draftRevision,
+      })
+      return session ? success(session) : createError('TRAINING_CONFLICT', '训练记录已在其他标签页更新，本地修改已保留。')
+    }
+    case 'edit-training-turn': {
+      const locale = await readLocale()
+      const existing = await getTrainingSession(message.articleId, locale)
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      const session = await editTrainingTurn(message.articleId, message.turnIndex, locale, {
+        sessionId: message.sessionId,
+        draftRevision: message.draftRevision,
+      })
+      return session ? success(session) : createError('TRAINING_CONFLICT', '训练记录已在其他标签页更新，请刷新后重试。')
+    }
+    case 'reset-training-session': {
+      const locale = await readLocale()
+      const article = await getArticle(message.articleId)
+      await resetTrainingSession(message.articleId, locale, article ? createTrainingArticleSnapshot(article) : undefined)
       return success(null)
+    }
     case 'get-ai-settings':
       return success(await readAiSettings())
     case 'save-ai-settings': {
@@ -869,11 +1066,11 @@ async function handleMessage(
     case 'ai-start':
       return startAiTraining(message.articleId)
     case 'ai-grade':
-      return gradeAiTraining(message.articleId)
+      return gradeAiTraining(message.articleId, message.answerVersionId, message.sessionId)
     case 'ai-reference-answer':
       return generateAiReferenceAnswer(message.articleId, message.submittedAt)
     case 'prepare-ai-bridge':
-      return prepareAiBridge(message.articleId)
+      return prepareAiBridge(message.articleId, message.answerVersionId, message.sessionId)
     case 'import-ai-feedback':
       return importAiFeedback(message.articleId, message.requestId, message.raw)
     case 'save-article':

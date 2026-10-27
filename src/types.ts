@@ -7,10 +7,15 @@ export type AiProviderId = 'openai' | 'deepseek' | 'gemini' | 'qwen' | 'glm' | '
 export type AiDimensionId = 'fidelity' | 'claim' | 'cause' | 'structure'
 
 export type ArticleMetadata = {
+  date?: string
   subtitle: string
   author: string
   source: string
 }
+
+export type MetadataStatus = 'found' | 'not-extracted' | 'verified-absent'
+export type MetadataField = 'title' | 'subtitle' | 'author' | 'source' | 'date'
+export type MetadataReview = { reviewed: boolean; fields: Record<MetadataField, { value: string; status: MetadataStatus }> }
 
 export type ArticleInline = {
   text: string
@@ -18,14 +23,14 @@ export type ArticleInline = {
 }
 
 export type ArticleBlock =
-  | { type: 'paragraph'; text: string; inlines?: ArticleInline[] }
-  | { type: 'heading'; level: number; text: string; inlines?: ArticleInline[] }
-  | { type: 'quote'; text: string; inlines?: ArticleInline[] }
-  | { type: 'list'; ordered: boolean; items: string[]; itemInlines?: ArticleInline[][] }
-  | { type: 'code'; language?: string; text: string }
-  | { type: 'image'; src: string; alt: string }
-  | { type: 'chart'; text: string; alt: string }
-  | { type: 'divider' }
+  | { type: 'paragraph'; text: string; inlines?: ArticleInline[]; id?: string }
+  | { type: 'heading'; level: number; text: string; inlines?: ArticleInline[]; id?: string }
+  | { type: 'quote'; text: string; inlines?: ArticleInline[]; id?: string }
+  | { type: 'list'; ordered: boolean; items: string[]; itemInlines?: ArticleInline[][]; id?: string }
+  | { type: 'code'; language?: string; text: string; id?: string }
+  | { type: 'image'; src: string; alt: string; id?: string }
+  | { type: 'chart'; text: string; alt: string; id?: string }
+  | { type: 'divider'; id?: string }
 
 export type AiSettings = {
   provider: AiProviderId
@@ -53,6 +58,7 @@ export type AiObservation = {
 
 export type AiSource = {
   paragraph: number
+  blockId?: string
   quote: string
   comment: string
 }
@@ -108,15 +114,79 @@ export type SavedArticleStore = {
 }
 
 export type TrainingTurn = {
+  revisionReason?: string
   stepIndex: number
   stepId?: string
+  courseVersion?: TrainingCourseVersion
+  answerVersionId?: string
   question: string
   answer: string
   submittedAt: string
+  structuredDraft?: TrainingStructuredDraft
+  importantParagraphs?: number[]
   threeSentenceDrafts?: ThreeSentenceDraft[]
   paragraphCursor?: number
   referenceAnswer?: AiReferenceAnswer
   feedback?: AiFeedback
+}
+
+export type TrainingStepStatus = 'not-started' | 'draft' | 'frozen' | 'completed' | 'needs-review'
+
+export type TrainingStepRecord = {
+  stepId: string
+  status: TrainingStepStatus
+  draft: string
+  structuredDraft?: TrainingStructuredDraft
+  importantParagraphs?: number[]
+  threeSentenceDrafts?: ThreeSentenceDraft[]
+  paragraphCursor?: number
+  answerVersionId?: string
+  completedAt?: string
+  needsReviewBecause?: string
+}
+
+export type TrainingAnswerVersion = {
+  revisionReason?: string
+  id: string
+  stepId: string
+  stepIndex: number
+  answer: string
+  structuredDraft?: TrainingStructuredDraft
+  importantParagraphs?: number[]
+  threeSentenceDrafts?: ThreeSentenceDraft[]
+  paragraphCursor?: number
+  createdAt: string
+  basedOnVersionId?: string
+  feedback?: AiFeedback
+}
+
+export type TrainingRequestKind = 'grade' | 'reference' | 'bridge'
+
+export type TrainingRevision = Pick<TrainingTurn, 'answer' | 'structuredDraft' | 'importantParagraphs' | 'threeSentenceDrafts' | 'paragraphCursor'> & { reason: string }
+
+export type TrainingRequestStatus = 'pending' | 'succeeded' | 'failed' | 'stale'
+
+export type TrainingAiRequest = {
+  id: string
+  kind: TrainingRequestKind
+  sessionId: string
+  stepId: string
+  answerVersionId?: string
+  status: TrainingRequestStatus
+  createdAt: string
+  updatedAt: string
+  errorCode?: ErrorCode
+  errorMessage?: string
+}
+
+export type TrainingArticleSnapshot = {
+  metadataReview?: MetadataReview
+  id: string
+  title: string
+  metadata: ArticleMetadata
+  text: string
+  blocks: ArticleBlock[]
+  capturedAt: string
 }
 
 export type ThreeSentenceDraft = {
@@ -124,16 +194,104 @@ export type ThreeSentenceDraft = {
   what: string
   why: string
   takeaway: string
+  role: string
+  evidence: string
+  evidenceType?: 'explicit' | 'inferred' | 'not-stated'
 }
 
+export type TrainingDraftFieldId =
+  | 'preview.metadata'
+  | 'threePoints.evidence'
+  | 'applicability.mode'
+  | 'applicability.reason'
+  | 'applicability.sourceId'
+  | 'applicability.quote'
+  | 'preview.title'
+  | 'preview.subtitle'
+  | 'preview.author'
+  | 'preview.source'
+  | 'preview.date'
+  | 'preview.firstParagraph'
+  | 'preview.lastParagraph'
+  | 'preview.structure'
+  | 'preview.expectedQuestion'
+  | 'preview.unknown'
+  | 'quickBrowse.structure'
+  | 'quickBrowse.paragraphMap'
+  | 'quickBrowse.paragraphLabels'
+  | 'quickBrowse.representativeSentences'
+  | 'threePoints.sources'
+  | 'questions.question'
+  | 'questions.category'
+  | 'questions.items'
+  | 'questions.relatedParagraphs'
+  | 'questions.whyImportant'
+  | 'questions.answered'
+  | 'questions.unanswered'
+  | 'assumptions.claim'
+  | 'assumptions.evidence'
+  | 'assumptions.assumption'
+  | 'assumptions.otherExplanations'
+  | 'assumptions.evidenceGap'
+  | 'assumptions.uncertainty'
+  | 'assumptions.claimStatus'
+  | 'assumptions.evidenceStatus'
+  | 'assumptions.assumptionImpact'
+  | 'toulminSimple.claim'
+  | 'toulminSimple.argumentId'
+  | 'toulminSimple.claimStatus'
+  | 'toulminSimple.evidenceStatus'
+  | 'toulminSimple.warrantStatus'
+  | 'toulminSimple.evidence'
+  | 'toulminSimple.warrant'
+  | 'toulminFull.backing'
+  | 'toulminFull.qualifier'
+  | 'toulminFull.rebuttal'
+  | 'toulminFull.weakestPoint'
+  | 'toulminFull.verification'
+  | 'feynman.explanation'
+  | 'feynman.example'
+  | 'feynman.exampleType'
+  | 'feynman.boundary'
+  | 'review.articleMainIdea'
+  | 'review.threePoints'
+  | 'review.coreArgument'
+  | 'review.premise'
+  | 'review.strongestEvidence'
+  | 'review.weakestPoint'
+  | 'review.uncertainty'
+  | 'review.revisit'
+
+export type TrainingStructuredDraft = Partial<Record<TrainingDraftFieldId, string>>
+
 export type TrainingFlowId = 'reading-10' | 'legacy-8'
+
+export type TrainingCourseVersion = 'guided-reading-10-v1' | 'guided-reading-10-v0'
 
 export type TrainingSession = {
   articleId: string
   flowId: TrainingFlowId
+  courseVersion?: TrainingCourseVersion
+  sessionId?: string
+  isTest?: boolean
+  currentStepId?: string
+  draftRevision?: number
+  answerVersionId?: string
+  argumentId?: string
+  articleSnapshotId?: string
+  articleSnapshot?: TrainingArticleSnapshot
+  answerVersions?: TrainingAnswerVersion[]
+  reinforcements?: { id: string; answer: string; createdAt: string }[]
+  aiRequests?: TrainingAiRequest[]
+  stepRecords?: Record<string, TrainingStepRecord>
+  isArchived?: boolean
+  archivedAt?: string
+  readingPosition?: { original: number; training: number }
   currentStep: number
   currentQuestion: string
   draft: string
+  structuredDraft?: TrainingStructuredDraft
+  importantParagraphs?: number[]
   threeSentenceDrafts?: ThreeSentenceDraft[]
   paragraphCursor?: number
   turns: TrainingTurn[]
@@ -149,6 +307,11 @@ export type TrainingSessionStore = {
 
 export type TrainingSessionStoreV2 = {
   version: 2
+  items: TrainingSession[]
+}
+
+export type TrainingSessionStoreV3 = {
+  version: 3
   items: TrainingSession[]
 }
 
@@ -170,6 +333,7 @@ export type ErrorCode =
   | 'AI_FEEDBACK_INVALID'
   | 'AI_ANSWER_INVALID'
   | 'TRAINING_ANSWER_FORMAT_INVALID'
+  | 'TRAINING_CONFLICT'
   | 'TRAINING_READ_ONLY'
   | 'SHORTCUTS_PAGE_FAILED'
 
@@ -199,8 +363,15 @@ export type ExtensionMessage =
   | { type: 'toggle-favorite'; articleId: string }
   | { type: 'get-training-session'; articleId: string }
   | { type: 'start-training-session'; articleId: string }
-  | { type: 'set-training-step'; articleId: string; stepIndex: number }
-  | { type: 'save-training-draft'; articleId: string; draft: string; threeSentenceDrafts?: ThreeSentenceDraft[]; paragraphCursor?: number }
+  | { type: 'get-training-history'; articleId: string }
+  | { type: 'set-training-step'; articleId: string; stepIndex: number; sessionId?: string; draftRevision?: number }
+  | { type: 'save-training-draft'; articleId: string; draft: string; sessionId?: string; stepId?: string; draftRevision?: number; structuredDraft?: TrainingStructuredDraft; importantParagraphs?: number[]; threeSentenceDrafts?: ThreeSentenceDraft[]; paragraphCursor?: number }
+  | { type: 'freeze-training-answer'; articleId: string; sessionId?: string; stepId?: string; draftRevision?: number }
+  | { type: 'confirm-training-step'; articleId: string; sessionId?: string; stepId?: string; draftRevision?: number; targetStepId?: string }
+  | { type: 'revise-training-turn'; articleId: string; turnIndex: number; sessionId: string; draftRevision: number; revision: TrainingRevision }
+  | { type: 'save-training-reinforcement'; articleId: string; sessionId: string; id: string; answer: string }
+  | { type: 'continue-training'; articleId: string; sessionId?: string; stepId?: string; draftRevision?: number; answerVersionId?: string }
+  | { type: 'edit-training-turn'; articleId: string; turnIndex: number; sessionId?: string; draftRevision?: number }
   | { type: 'rewind-training-session'; articleId: string }
   | { type: 'reset-training-session'; articleId: string }
   | { type: 'get-ai-settings' }
@@ -208,9 +379,9 @@ export type ExtensionMessage =
   | { type: 'list-ai-models'; settings: AiSettings }
   | { type: 'test-ai-connection'; settings: AiSettings }
   | { type: 'ai-start'; articleId: string }
-  | { type: 'ai-grade'; articleId: string }
+  | { type: 'ai-grade'; articleId: string; sessionId?: string; answerVersionId?: string }
   | { type: 'ai-reference-answer'; articleId: string; submittedAt: string }
-  | { type: 'prepare-ai-bridge'; articleId: string }
+  | { type: 'prepare-ai-bridge'; articleId: string; sessionId?: string; answerVersionId?: string }
   | { type: 'import-ai-feedback'; articleId: string; requestId: string; raw: string }
   | { type: 'save-article'; article: CaptureRecord }
 
@@ -224,6 +395,8 @@ export type StorageState = {
   savedArticles?: SavedArticleStore | SavedArticle[]
   trainingSessions?: TrainingSessionStore | TrainingSession[]
   trainingSessionsV2?: TrainingSessionStoreV2
+  trainingSessionsV3?: TrainingSessionStoreV3
+  trainingTestSessionsV3?: TrainingSessionStoreV3
   aiSettings?: AiSettings
   locale?: Locale
   testMode?: boolean

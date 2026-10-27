@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { trainingAverageScore, trainingEditPreview, canRetryTrainingDraft, acceptDraftSaveResponse, mergeTrainingFeedback } from './training/state'
+import type { TrainingTurn } from './types'
 import type {
   CaptureRecord,
   AiSettings,
@@ -14,6 +16,8 @@ import type {
   PreReadingPredictionDraft,
   SavedArticle,
   TrainingSession,
+  TrainingDraftFieldId,
+  TrainingStructuredDraft,
 } from './types'
 import { getArticleBlocks, numberArticleBlocks } from './articles/format'
 import {
@@ -31,11 +35,17 @@ import {
   generateReadingPdfHtml,
   sanitizeFilename,
 } from './export/reading'
-import { areThreeSentenceDraftsComplete, formatThreeSentenceAnswer, getLessonSteps, LESSON_STEPS, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from './training/lessons'
+import { areThreeSentenceDraftsComplete, formatThreeSentenceAnswer, getLessonSteps, isLessonAnswerFormatValid, isStructuredDraftComplete, LESSON_STEPS, STRUCTURED_ANSWER_MAX_LENGTH, structuredFieldsForStep, STRUCTURED_FIELD_DEFINITIONS, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from './training/lessons'
 import { useI18n } from './i18n/context'
 import { detectLocale } from './i18n/types'
 import { translate } from './i18n/messages'
 import './App.css'
+import { effectiveTrainingTurns, trainingProgress, reviewDraftFromResults, initialImportantParagraphs } from './training/state'
+import { createBrowseRows, readBrowseRows, PARAGRAPH_ROLES } from './training/browse'
+import { readQuestions, formatQuestions, QUESTION_CATEGORIES, type ReadingQuestion } from './training/questions'
+import { initialMetadataReview, emptySummaryEvidence, formatMetadataReview, readSummaryEvidence } from './training/evidence'
+import { MetadataReviewForm, SummaryEvidenceForm } from './training/EvidenceForms'
+import { isTrainingDraftValid, structuredFieldLimit, summaryPointLength, requiredFieldsForDraft } from './training/lessons'
 
 const extensionAvailable =
   typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id)
@@ -123,8 +133,8 @@ function SidePanel() {
       const matchesFilter =
         filter === 'all' ||
         (filter === 'favorite' && article.isFavorite) ||
-        (filter === 'in-progress' && Boolean(session && !session.completedAt)) ||
-        (filter === 'completed' && Boolean(session?.completedAt))
+        (filter === 'in-progress' && Boolean(session && !trainingProgress(session).isComplete)) ||
+        (filter === 'completed' && trainingProgress(session).isComplete)
       if (!matchesFilter) return false
       if (!query) return true
       return [article.title, article.author, article.metadata?.subtitle, article.metadata?.author, article.metadata?.source, article.url, article.text]
@@ -134,7 +144,8 @@ function SidePanel() {
   }, [articles, filter, searchTerm, sessions])
 
   const growthStats = useMemo(() => {
-    const allTurns = Object.values(sessions).flatMap((session) => session.turns)
+    const formalSessions = Object.values(sessions).filter((session) => !session.isTest)
+    const allTurns = formalSessions.flatMap((session) => effectiveTrainingTurns(session))
     const scoredTurns = allTurns.filter((turn) => turn.feedback)
     const dimensionTotals = scoredTurns.reduce<Record<string, { total: number; count: number }>>((totals, turn) => {
       if (!turn.feedback) return totals
@@ -147,7 +158,7 @@ function SidePanel() {
     }, {})
     return {
       articleCount: articles.length,
-      completedCount: Object.values(sessions).filter((session) => session.flowId === 'reading-10' && Boolean(session.completedAt)).length,
+      completedCount: formalSessions.filter((session) => session.courseVersion === 'guided-reading-10-v1' && trainingProgress(session).isComplete).length,
       turnCount: allTurns.length,
       average: scoredTurns.length === 0
         ? null
@@ -376,10 +387,8 @@ function SidePanel() {
                 {filteredArticles.slice(0, 8).map((article) => {
                   const session = sessions[article.id]
                   const totalSteps = session?.flowId === 'legacy-8' ? 8 : LESSON_STEPS.length
-                  const progress = session ? `${Math.min(session.currentStep, totalSteps)}/${totalSteps}` : t('common.notStarted')
-                  const average = session?.turns.length
-                    ? session.turns.reduce((sum, turn) => sum + (turn.feedback?.total ?? 0), 0) / session.turns.length
-                    : null
+                  const progress = session ? `${trainingProgress(session).completed}/${totalSteps}` : t('common.notStarted')
+                  const average = trainingAverageScore(session)
                   return (
                     <li key={article.id}>
                       <div className="article-list-item">
@@ -670,6 +679,11 @@ function TrainingPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [mobilePane, setMobilePane] = useState<'article' | 'training'>('article')
+  const articleColumnRef = useRef<HTMLElement | null>(null)
+  const coachColumnRef = useRef<HTMLElement | null>(null)
+  const [trainingSnapshot, setTrainingSnapshot] = useState<TrainingSession['articleSnapshot']>()
+  const receiveTrainingSnapshot = useCallback((snapshot: TrainingSession['articleSnapshot']) => setTrainingSnapshot(snapshot), [])
 
   const queryErrorCode = useMemo(
     () => new URLSearchParams(window.location.search).get('errorCode') as ErrorCode | null,
@@ -736,6 +750,37 @@ function TrainingPage() {
     }, 500)
     return () => window.clearTimeout(timer)
   }, [capture?.id, loading, preReadingPrediction, queryErrorCode])
+
+  useEffect(() => {
+    if (!capture?.id || loading) return
+    const key = `reading-position:${capture.id}`
+    const raw = sessionStorage.getItem(key)
+    if (raw) {
+      try {
+        const position = JSON.parse(raw) as { article?: number; training?: number }
+        window.setTimeout(() => {
+          if (typeof position.article === 'number' && articleColumnRef.current) articleColumnRef.current.scrollTop = position.article
+          if (typeof position.training === 'number' && coachColumnRef.current) coachColumnRef.current.scrollTop = position.training
+        }, 0)
+      } catch {
+        sessionStorage.removeItem(key)
+      }
+    }
+    const savePosition = () => {
+      sessionStorage.setItem(key, JSON.stringify({
+        article: articleColumnRef.current?.scrollTop ?? 0,
+        training: coachColumnRef.current?.scrollTop ?? 0,
+      }))
+    }
+    const articleColumn = articleColumnRef.current
+    const coachColumn = coachColumnRef.current
+    articleColumn?.addEventListener('scroll', savePosition, { passive: true })
+    coachColumn?.addEventListener('scroll', savePosition, { passive: true })
+    return () => {
+      articleColumn?.removeEventListener('scroll', savePosition)
+      coachColumn?.removeEventListener('scroll', savePosition)
+    }
+  }, [capture?.id, loading])
 
   const saveCurrentArticle = async () => {
     const trimmedText = text.trim()
@@ -889,8 +934,14 @@ function TrainingPage() {
               <span>{loadError}</span>
             </div>
           )}
-          <div className={capture && 'savedAt' in capture ? 'training-workspace has-coach' : 'training-workspace'}>
-            <section className="article-column">
+          {capture && 'savedAt' in capture && (
+            <nav className="mobile-pane-toggle" aria-label={t('training.mobilePaneLabel')}>
+              <button className={mobilePane === 'article' ? 'active' : ''} type="button" onClick={() => setMobilePane('article')}>{t('training.originalPane')}</button>
+              <button className={mobilePane === 'training' ? 'active' : ''} type="button" onClick={() => setMobilePane('training')}>{t('training.trainingPane')}</button>
+            </nav>
+          )}
+          <div className={`${capture && 'savedAt' in capture ? 'training-workspace has-coach' : 'training-workspace'} mobile-pane-${mobilePane}`}>
+            <section className="article-column" ref={articleColumnRef}>
               <section className="editor-card">
                 <div className="editor-meta">
                   <span className="section-kicker">{t('training.sourceMeta')}</span>
@@ -931,7 +982,7 @@ function TrainingPage() {
                     <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={t('training.articleBodyPlaceholder')} rows={22} maxLength={36_000} />
                   </label>
                 </details>
-                {text.trim() && <ArticlePreview blocks={getArticleBlocks(text, capture && capture.text.trim() === text.trim() ? capture.blocks : undefined)} />}
+                {text.trim() && <ArticlePreview blocks={trainingSnapshot?.blocks ?? getArticleBlocks(text, capture && capture.text.trim() === text.trim() ? capture.blocks : undefined)} />}
                 <div className="editor-footer">
                   <span className="character-count">{text.length.toLocaleString()} {t('common.characters')}</span>
                   <div className="editor-actions">
@@ -948,8 +999,8 @@ function TrainingPage() {
               </section>
             </section>
             {capture && 'savedAt' in capture && (
-              <aside className="coach-column">
-                <TrainingCoach article={capture} />
+              <aside className="coach-column" ref={coachColumnRef}>
+                <TrainingCoach key={capture.id} article={capture} onSnapshot={receiveTrainingSnapshot} />
               </aside>
             )}
           </div>
@@ -1008,17 +1059,22 @@ function renderArticleInline(text: string, inlines?: ArticleInline[]) {
   })
 }
 
-function TrainingCoach({ article }: { article: SavedArticle }) {
+function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnapshot: (snapshot: TrainingSession['articleSnapshot']) => void }) {
   const { t, locale } = useI18n()
   const articleId = article.id
-  const paragraphs = useMemo(() => numberArticleBlocks(getArticleBlocks(article.text, article.blocks)), [article])
   const [session, setSession] = useState<TrainingSession | null>(null)
+  const sourceBlocksJson = JSON.stringify(session?.articleSnapshot?.blocks ?? getArticleBlocks(article.text, article.blocks))
+  const paragraphs = useMemo(() => numberArticleBlocks(JSON.parse(sourceBlocksJson) as ArticleBlock[]), [sourceBlocksJson])
+  useEffect(() => { onSnapshot(session?.articleSnapshot) }, [onSnapshot, session?.articleSnapshot])
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null)
   const [testMode, setTestMode] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [aiLoaded, setAiLoaded] = useState(false)
   const [reinforcing, setReinforcing] = useState(false)
+  const [practiceId, setPracticeId] = useState('')
   const [answer, setAnswer] = useState('')
+  const [structuredDraft, setStructuredDraft] = useState<TrainingStructuredDraft>({})
+  const [importantParagraphs, setImportantParagraphs] = useState<number[]>([])
   const [threeSentenceDrafts, setThreeSentenceDrafts] = useState<TrainingSession['threeSentenceDrafts']>([])
   const [paragraphCursor, setParagraphCursor] = useState(0)
   const [busy, setBusy] = useState(false)
@@ -1028,24 +1084,66 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
   const [error, setError] = useState('')
   const [hintVisible, setHintVisible] = useState(false)
   const [referenceAnswerBusy, setReferenceAnswerBusy] = useState(false)
+  const [preReadConfirmed, setPreReadConfirmed] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [reviewing, setReviewing] = useState(false)
+  const [reviewTurnIndex, setReviewTurnIndex] = useState<number | null>(null)
+  const [editing, setEditing] = useState<{ base: TrainingSession; turnIndex: number } | null>(null)
+  const [revisionReason, setRevisionReason] = useState('')
+  const [feedbackBusy, setFeedbackBusy] = useState(false)
+  const [saveConflict, setSaveConflict] = useState<TrainingSession | null>(null)
+  const pendingSave = useRef<Promise<TrainingSession | null> | null>(null)
+  const [historySessions, setHistorySessions] = useState<TrainingSession[]>([])
+  const [historyView, setHistoryView] = useState<TrainingSession | null>(null)
+  const lastAutoSavedFingerprint = useRef<string | null>(null)
+  const snapshotMetadataJson = JSON.stringify(session?.articleSnapshot ? { title: session.articleSnapshot.title, metadata: session.articleSnapshot.metadata } : { title: article.title, metadata: article.metadata })
+
+  const previewDefaults = useMemo<TrainingStructuredDraft>(() => {
+    const snapshotMetadata = JSON.parse(snapshotMetadataJson) as { title: string; metadata?: SavedArticle['metadata'] }
+    const metadata = snapshotMetadata.metadata ?? { subtitle: '', author: article.author ?? '', source: '' }
+    return {
+      'preview.metadata': JSON.stringify(initialMetadataReview({ title: snapshotMetadata.title, metadata })),
+    }
+  }, [article.author, snapshotMetadataJson])
 
   const applySession = useCallback((next: TrainingSession) => {
     const restoredDrafts = next.currentStep === 2
       ? next.threeSentenceDrafts?.length
         ? next.threeSentenceDrafts
         : next.draft.trim() && paragraphs[0]
-          ? [{ paragraph: paragraphs[0].paragraph, what: next.draft, why: '', takeaway: '' }]
+          ? [{ paragraph: paragraphs[0].paragraph, what: next.draft, why: '', takeaway: '', role: '', evidence: '' }]
           : []
       : []
     const nextCursor = next.currentStep === 2
       ? Math.min(next.paragraphCursor ?? 0, Math.max(0, paragraphs.length - 1))
       : 0
+    const nextImportantParagraphs = next.currentStep === 2
+      ? initialImportantParagraphs(next)
+      : []
+    const nextStep = getLessonSteps(locale)[Math.min(next.currentStep, LESSON_STEPS.length - 1)]
+    const defaultStructuredDraft: TrainingStructuredDraft = next.currentStep === 0 && next.turns.length === 0 ? previewDefaults
+      : next.currentStep === 3 && !next.draft.trim() && next.articleSnapshot ? { 'threePoints.evidence': JSON.stringify(emptySummaryEvidence(next.articleSnapshot.id)) }
+      : next.currentStep === 9 && !next.draft.trim() ? reviewDraftFromResults(next) : {}
+    const nextStructuredDraft = next.structuredDraft ?? defaultStructuredDraft
+    const nextAnswer = nextStep?.id === 'three-points'
+      ? next.draft
+      : structuredFieldsForStep(nextStep?.id ?? '').length > 0
+      ? formatStructuredAnswer(nextStep.id, nextStructuredDraft, t) || next.draft
+      : next.draft
     setSession(next)
+    setStructuredDraft(nextStructuredDraft)
+    setImportantParagraphs(nextImportantParagraphs)
     setThreeSentenceDrafts(restoredDrafts)
     setParagraphCursor(nextCursor)
-    setAnswer(next.currentStep === 2 ? formatThreeSentenceAnswer(restoredDrafts) || next.draft : next.draft)
+    setAnswer(next.currentStep === 2
+      ? formatThreeSentenceAnswer(restoredDrafts.filter((draft) => nextImportantParagraphs.includes(draft.paragraph))) || next.draft
+      : nextAnswer)
     setHintVisible(false)
-  }, [paragraphs])
+    setSaveStatus('idle')
+    setReviewing(false)
+    setReviewTurnIndex(null)
+    setSaveConflict(null)
+  }, [locale, paragraphs, previewDefaults, t])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1054,15 +1152,20 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
           type: 'get-training-session',
           articleId,
         }),
+        sendExtensionMessage<TrainingSession[]>({
+          type: 'get-training-history',
+          articleId,
+        }),
         sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }),
         sendExtensionMessage<boolean>({ type: 'get-test-mode' }),
-      ]).then(([sessionResponse, settingsResponse, testModeResponse]) => {
+      ]).then(([sessionResponse, historyResponse, settingsResponse, testModeResponse]) => {
         setLoaded(true)
         setAiLoaded(true)
         if (sessionResponse.ok) {
           if (sessionResponse.data) applySession(sessionResponse.data)
         }
         else setError(errorMessage(sessionResponse.error))
+        if (historyResponse.ok) setHistorySessions(historyResponse.data)
         if (settingsResponse.ok) setAiSettings(settingsResponse.data)
         if (testModeResponse.ok) setTestMode(testModeResponse.data)
         else setError(errorMessage(testModeResponse.error))
@@ -1072,21 +1175,63 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
   }, [applySession, articleId])
 
   useEffect(() => {
-    if (!loaded || !session || session.flowId === 'legacy-8') return
-    const currentAnswer = session.currentStep === 2 ? formatThreeSentenceAnswer(threeSentenceDrafts ?? []) : answer
+    if (!loaded || !session || session.courseVersion !== 'guided-reading-10-v1' || busy || editing || saveConflict || reviewing || historyView || reinforcing || session.currentStep >= LESSON_STEPS.length) return
+    const currentStep = getLessonSteps(locale)[Math.min(session.currentStep, LESSON_STEPS.length - 1)]
+    const currentAnswer = session.currentStep === 2
+      ? formatThreeSentenceAnswer((threeSentenceDrafts ?? []).filter((draft) => importantParagraphs.includes(draft.paragraph)))
+      : currentStep?.id !== 'three-points' && structuredFieldsForStep(currentStep?.id ?? '').length > 0
+        ? formatStructuredAnswer(currentStep.id, structuredDraft, t) || answer
+        : answer
+    const fingerprint = JSON.stringify([session.sessionId, session.currentStepId, currentAnswer, structuredDraft, importantParagraphs, threeSentenceDrafts, paragraphCursor])
+    if (fingerprint === lastAutoSavedFingerprint.current) return
     const timer = window.setTimeout(() => {
-      void sendExtensionMessage<TrainingSession>({
+      if (pendingSave.current) return
+      setSaveStatus('saving')
+      lastAutoSavedFingerprint.current = fingerprint
+      const request = sendExtensionMessage<TrainingSession>({
         type: 'save-training-draft',
         articleId,
+        sessionId: session.sessionId,
+        stepId: session.currentStepId,
+        draftRevision: session.draftRevision,
         draft: currentAnswer,
-        ...(session.currentStep === 2 ? { threeSentenceDrafts, paragraphCursor } : {}),
+        ...(structuredFieldsForStep(currentStep?.id ?? '').length > 0 ? { structuredDraft } : {}),
+        ...(session.currentStep === 2 ? { importantParagraphs, threeSentenceDrafts, paragraphCursor } : {}),
+      }).then(async (response) => {
+        if (response.ok) {
+          setSession((current) => acceptDraftSaveResponse(current, response.data))
+          setSaveStatus('saved')
+          return response.data
+        } else {
+          lastAutoSavedFingerprint.current = null
+          setSaveStatus('error')
+          if (response.error.code === 'TRAINING_CONFLICT') {
+            const latest = await sendExtensionMessage<TrainingSession | null>({ type: 'get-training-session', articleId })
+            if (latest.ok && latest.data) setSaveConflict(latest.data)
+          }
+          return null
+        }
+      }).catch(() => {
+        lastAutoSavedFingerprint.current = null
+        setSaveStatus('error')
+        return null
       })
+      pendingSave.current = request
+      void request.finally(() => { if (pendingSave.current === request) pendingSave.current = null })
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [answer, articleId, loaded, paragraphCursor, session, threeSentenceDrafts])
+  }, [answer, articleId, importantParagraphs, loaded, locale, paragraphCursor, session, structuredDraft, t, threeSentenceDrafts, busy, reviewing, historyView, reinforcing, editing, saveConflict])
+
+  useEffect(() => {
+    let active = true
+    void sendExtensionMessage<TrainingSession[]>({ type: 'get-training-history', articleId }).then((response) => {
+      if (active && response.ok) setHistorySessions(response.data)
+    })
+    return () => { active = false }
+  }, [articleId, session?.sessionId, historyView])
 
   const aiConfigured = aiLoaded && Boolean(aiSettings?.apiKey.trim())
-  const canGoBack = Boolean(session?.turns.at(-1)?.feedback && !bridge)
+  const canGoBack = Boolean(session?.turns.length && !bridge && !reviewing)
 
   const start = async () => {
     setBusy(true)
@@ -1112,6 +1257,8 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
       type: 'set-training-step',
       articleId,
       stepIndex,
+      sessionId: session.sessionId,
+      draftRevision: session.draftRevision,
     })
     setBusy(false)
     if (!response.ok) {
@@ -1120,6 +1267,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     }
     applySession(response.data)
     setReinforcing(false)
+    setReviewing(false)
     setBridge(null)
     setBridgeReply('')
     setBridgeError('')
@@ -1128,11 +1276,18 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
   const currentParagraph = paragraphs[paragraphCursor]
   const currentParagraphDraft = threeSentenceDrafts?.find((draft) => draft.paragraph === currentParagraph?.paragraph)
   const isThreeSentenceStep = session?.currentStep === 2 && !reinforcing
-  const threeSentenceComplete = isThreeSentenceStep && areThreeSentenceDraftsComplete(threeSentenceDrafts ?? [], paragraphs.map(({ paragraph }) => paragraph))
-  const answerMaxLength = isThreeSentenceStep ? THREE_SENTENCE_ANSWER_MAX_LENGTH : TRAINING_ANSWER_MAX_LENGTH
+  const isThreePointsStep = session?.currentStep === 3 && !reinforcing
+  const currentParagraphSelected = Boolean(currentParagraph && importantParagraphs.includes(currentParagraph.paragraph))
+  const threeSentenceComplete = isThreeSentenceStep && importantParagraphs.length > 0 && areThreeSentenceDraftsComplete(threeSentenceDrafts ?? [], importantParagraphs)
+  const threePointsComplete = !isThreePointsStep || isLessonAnswerFormatValid(3, answer, locale)
+  const answerMaxLength = isThreeSentenceStep
+    ? THREE_SENTENCE_ANSWER_MAX_LENGTH
+    : session && structuredFieldsForStep(getLessonSteps(locale)[Math.min(session.currentStep, LESSON_STEPS.length - 1)]?.id ?? '').length > 0
+      ? STRUCTURED_ANSWER_MAX_LENGTH
+      : TRAINING_ANSWER_MAX_LENGTH
 
-  const updateThreeSentenceField = (field: 'what' | 'why' | 'takeaway', value: string) => {
-    if (!currentParagraph) return
+  const updateThreeSentenceField = (field: 'what' | 'why' | 'takeaway' | 'role' | 'evidence', value: string) => {
+    if (!currentParagraph || !currentParagraphSelected) return
     const current = threeSentenceDrafts ?? []
     const existing = current.find((draft) => draft.paragraph === currentParagraph.paragraph)
     const next = [
@@ -1142,46 +1297,131 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
         what: existing?.what ?? '',
         why: existing?.why ?? '',
         takeaway: existing?.takeaway ?? '',
+        role: existing?.role ?? '',
+        evidence: existing?.evidence ?? '',
         [field]: value,
       },
     ].sort((left, right) => left.paragraph - right.paragraph)
     setThreeSentenceDrafts(next)
-    setAnswer(formatThreeSentenceAnswer(next))
+    setAnswer(formatThreeSentenceAnswer(next.filter((draft) => importantParagraphs.includes(draft.paragraph))))
+    setError('')
+  }
+
+  const updateStructuredField = (field: TrainingDraftFieldId, value: string) => {
+    const next = { ...structuredDraft, [field]: value }
+    if (field === 'applicability.mode' && value === 'not-applicable' && step?.id === 'toulmin-simple' && !next['toulminSimple.argumentId']) next['toulminSimple.argumentId'] = session?.argumentId ?? crypto.randomUUID()
+    setStructuredDraft(next)
+    if (step?.id !== 'three-points') setAnswer(formatStructuredAnswer(step?.id ?? '', next, t))
     setError('')
   }
 
   const moveToParagraph = (nextCursor: number) => {
-    if (nextCursor > paragraphCursor && !areThreeSentenceDraftsComplete(threeSentenceDrafts ?? [], [currentParagraph?.paragraph ?? 0])) {
-      setError(t('coach.paragraphIncomplete'))
-      return
-    }
     setParagraphCursor(Math.max(0, Math.min(nextCursor, Math.max(0, paragraphs.length - 1))))
     setError('')
   }
 
-  const submit = async () => {
+  const toggleImportantParagraph = (paragraph: number) => {
+    const next = importantParagraphs.includes(paragraph)
+      ? importantParagraphs.filter((item) => item !== paragraph)
+      : [...importantParagraphs, paragraph].sort((left, right) => left - right)
+    setImportantParagraphs(next)
+    setAnswer(formatThreeSentenceAnswer((threeSentenceDrafts ?? []).filter((draft) => next.includes(draft.paragraph))))
+    setError('')
+  }
+
+  const persistCurrentDraft = async (identity = session) => {
+    const pending = await pendingSave.current
+    if (pending && identity && canRetryTrainingDraft(identity, pending)) identity = pending
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'save-training-draft',
+      articleId,
+      sessionId: identity?.sessionId,
+      stepId: identity?.currentStepId,
+      draftRevision: identity?.draftRevision,
+      draft: answer,
+      ...(isStructuredStep ? { structuredDraft } : {}),
+      ...(isThreeSentenceStep ? { importantParagraphs, threeSentenceDrafts, paragraphCursor } : {}),
+    })
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      if (response.error.code === 'TRAINING_CONFLICT') {
+        const latest = await sendExtensionMessage<TrainingSession | null>({ type: 'get-training-session', articleId })
+        if (latest.ok && latest.data) setSaveConflict(latest.data)
+      }
+      return null
+    }
+    applySession(response.data)
+    lastAutoSavedFingerprint.current = JSON.stringify([response.data.sessionId, response.data.currentStepId, answer, structuredDraft, importantParagraphs, threeSentenceDrafts, paragraphCursor])
+    return response.data
+  }
+
+  const retrySave = async () => {
+    if (saveConflict) return
+    setBusy(true)
+    setSaveStatus('saving')
+    const saved = await persistCurrentDraft()
+    setSaveStatus(saved ? 'saved' : 'error')
+    setBusy(false)
+  }
+
+  const freezeCurrentAnswer = async (saved: TrainingSession) => {
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'freeze-training-answer',
+      articleId,
+      sessionId: saved.sessionId,
+      stepId: saved.currentStepId,
+      draftRevision: saved.draftRevision,
+    })
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return null
+    }
+    applySession(response.data)
+    return response.data
+  }
+
+  const validateCurrentDraft = () => {
+    if (session && !isTrainingDraftValid({ ...session, draft: answer, structuredDraft, importantParagraphs, threeSentenceDrafts }, locale)) {
+      setError(t('coach.structuredIncomplete'))
+      return false
+    }
+    if (isThreeSentenceStep && importantParagraphs.length === 0) {
+      setError(t('coach.selectImportantParagraph'))
+      return false
+    }
     if (isThreeSentenceStep && !threeSentenceComplete) {
       setError(t('coach.paragraphIncomplete'))
-      return
+      return false
+    }
+    if (isThreePointsStep && !threePointsComplete) {
+      setError(t('coach.threePointsIncomplete'))
+      return false
+    }
+    if (isStructuredStep && !structuredComplete) {
+      setError(t('coach.structuredIncomplete'))
+      return false
     }
     if (answer.trim().length < 5) {
       setError(t('coach.answerTooShort'))
-      return
+      return false
     }
+    return true
+  }
+
+  const submit = async () => {
+    if (!validateCurrentDraft()) return
     setBusy(true)
     setError('')
-    const draftResponse = await sendExtensionMessage<TrainingSession>({
-      type: 'save-training-draft',
-      articleId,
-      draft: answer,
-      ...(isThreeSentenceStep ? { threeSentenceDrafts, paragraphCursor } : {}),
-    })
-    if (!draftResponse.ok) {
+    const draftResponse = await persistCurrentDraft()
+    if (!draftResponse) {
       setBusy(false)
-      setError(errorMessage(draftResponse.error))
       return
     }
-    applySession(draftResponse.data)
+    const frozen = await freezeCurrentAnswer(draftResponse)
+    if (!frozen) {
+      setBusy(false)
+      return
+    }
 
     if (!aiConfigured) {
       const bridgeResponse = await sendExtensionMessage<{ requestId: string; prompt: string }>({
@@ -1209,6 +1449,38 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     } else setError(errorMessage(aiResponse.error))
   }
 
+  const continueWithoutAi = async () => {
+    if (!validateCurrentDraft()) return
+    setBusy(true)
+    setError('')
+    const saved = await persistCurrentDraft()
+    if (!saved) {
+      setBusy(false)
+      return
+    }
+    const frozen = await freezeCurrentAnswer(saved)
+    if (!frozen) {
+      setBusy(false)
+      return
+    }
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'continue-training',
+      articleId,
+      sessionId: frozen.sessionId,
+      stepId: frozen.currentStepId,
+      draftRevision: frozen.draftRevision,
+      answerVersionId: frozen.answerVersionId,
+    })
+    setBusy(false)
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return
+    }
+    applySession(response.data)
+    setReinforcing(false)
+    setReviewing(false)
+  }
+
   const copyBridgePrompt = async () => {
     if (!bridge) return
     try {
@@ -1234,11 +1506,25 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
       setBridgeError(errorMessage(response.error))
       return
     }
-    applySession(response.data)
-    setReinforcing(false)
+    if (reviewing) setSession((current) => mergeTrainingFeedback(current, response.data))
+    else {
+      applySession(response.data)
+      setReinforcing(false)
+    }
     setBridge(null)
     setBridgeReply('')
     setBridgeError('')
+  }
+
+  const saveReinforcement = async () => {
+    if (!session?.sessionId || busy) return
+    setBusy(true)
+    try {
+      const response = await sendExtensionMessage<TrainingSession>({ type: 'save-training-reinforcement', articleId, sessionId: session.sessionId, id: practiceId, answer })
+      if (!response.ok) { setError(errorMessage(response.error)); return }
+      applySession(response.data)
+      setReinforcing(false)
+    } finally { setBusy(false) }
   }
 
   const requestReferenceAnswer = async (turn: TrainingSession['turns'][number]) => {
@@ -1255,7 +1541,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
         setError(errorMessage(response.error))
         return
       }
-      applySession(response.data)
+      setSession((current) => current && current.sessionId === response.data.sessionId ? { ...current, turns: response.data.turns, answerVersions: response.data.answerVersions, aiRequests: response.data.aiRequests } : current)
     } catch {
       setError(t('feedback.referenceAnswerFailed'))
     } finally {
@@ -1263,13 +1549,104 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     }
   }
 
-  const rewind = async () => {
+  const exportHistorySession = (historicalSession: TrainingSession, format: 'markdown' | 'json') => {
+    const model = buildReadingExportModel(article, historicalSession, locale)
+    if (format === 'markdown') {
+      downloadText(generateReadingMarkdown(model), sanitizeFilename(`${article.title}-${historicalSession.sessionId ?? 'history'}`, 'md', locale), 'text/markdown')
+      return
+    }
+    downloadText(generateReadingJson(model), sanitizeFilename(`${article.title}-${historicalSession.sessionId ?? 'history'}`, 'json', locale), 'application/json')
+  }
+
+  const rewind = () => {
     if (!canGoBack || !window.confirm(t('coach.confirmBack'))) return
+    setReinforcing(false)
+    setReviewing(true)
+    setReviewTurnIndex((session?.turns.length ?? 1) - 1)
+    setBridge(null)
+    setBridgeReply('')
+    setBridgeError('')
+  }
+
+  const editReviewedTurn = async () => {
+    if (reviewTurnIndex === null || !session) return
+    setBusy(true)
+    const pending = await pendingSave.current
+    const base = pending && canRetryTrainingDraft(session, pending) ? pending : session
+    setEditing({ base: { ...base, draft: answer, structuredDraft, importantParagraphs, threeSentenceDrafts, paragraphCursor }, turnIndex: reviewTurnIndex })
+    setRevisionReason('')
+    applySession(trainingEditPreview(base, reviewTurnIndex, locale))
+    setBusy(false)
+  }
+
+  const saveRevision = async () => {
+    if (!editing?.base.sessionId || !validateCurrentDraft()) return
     setBusy(true)
     setError('')
     const response = await sendExtensionMessage<TrainingSession>({
-      type: 'rewind-training-session',
+      type: 'revise-training-turn', articleId, turnIndex: editing.turnIndex,
+      sessionId: editing.base.sessionId, draftRevision: editing.base.draftRevision ?? 0,
+      revision: { answer, structuredDraft: isStructuredStep ? structuredDraft : undefined,
+        ...(isThreeSentenceStep ? { importantParagraphs, threeSentenceDrafts, paragraphCursor } : {}), reason: revisionReason },
+    })
+    setBusy(false)
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      if (response.error.code === 'TRAINING_CONFLICT') {
+        const latest = await sendExtensionMessage<TrainingSession | null>({ type: 'get-training-session', articleId })
+        if (latest.ok && latest.data) setSaveConflict(latest.data)
+      }
+      return
+    }
+    const base = editing.base
+    applySession(base.currentStep === response.data.currentStep ? { ...response.data, draft: base.draft, structuredDraft: base.structuredDraft, importantParagraphs: base.importantParagraphs, threeSentenceDrafts: base.threeSentenceDrafts, paragraphCursor: base.paragraphCursor } : response.data)
+    setEditing(null)
+  }
+
+  const gradeSavedAnswer = async (turn: TrainingTurn) => {
+    if (!session?.sessionId || !turn.answerVersionId || feedbackBusy) return
+    setFeedbackBusy(true)
+    setError('')
+    if (!aiConfigured) {
+      const response = await sendExtensionMessage<{ requestId: string; prompt: string }>({ type: 'prepare-ai-bridge', articleId, sessionId: session.sessionId, answerVersionId: turn.answerVersionId })
+      setFeedbackBusy(false)
+      if (response.ok) { setBridge(response.data); setBridgeReply(''); setBridgeError('') }
+      else setError(errorMessage(response.error))
+      return
+    }
+    const response = await sendExtensionMessage<TrainingSession>({ type: 'ai-grade', articleId, sessionId: session.sessionId, answerVersionId: turn.answerVersionId })
+    setFeedbackBusy(false)
+    if (!response.ok) { setError(errorMessage(response.error)); return }
+    setSession((current) => mergeTrainingFeedback(current, response.data))
+  }
+
+  const confirmReviewedStep = async (targetStepId: string) => {
+    if (!session || busy) return
+    if (targetStepId === session.currentStepId) { await confirmStillApplies(); return }
+    setBusy(true)
+    const pending = await pendingSave.current
+    const identity = pending && canRetryTrainingDraft(session, pending) ? pending : session
+    const response = await sendExtensionMessage<TrainingSession>({ type: 'confirm-training-step', articleId, sessionId: identity.sessionId, draftRevision: identity.draftRevision, targetStepId })
+    setBusy(false)
+    if (!response.ok) { setError(errorMessage(response.error)); return }
+    setSession(response.data)
+  }
+
+  const confirmStillApplies = async () => {
+    if (!session || !step || busy || session.stepRecords?.[step.id]?.status !== 'needs-review') return
+    setBusy(true)
+    setError('')
+    const saved = await persistCurrentDraft()
+    if (!saved || saved.stepRecords?.[step.id]?.status !== 'needs-review') {
+      setBusy(false)
+      return
+    }
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'confirm-training-step',
       articleId,
+      sessionId: session.sessionId,
+      stepId: session.currentStepId,
+      draftRevision: saved.draftRevision,
     })
     setBusy(false)
     if (!response.ok) {
@@ -1278,9 +1655,6 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
     }
     applySession(response.data)
     setReinforcing(false)
-    setBridge(null)
-    setBridgeReply('')
-    setBridgeError('')
   }
 
   const reset = async () => {
@@ -1294,7 +1668,10 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
       return
     }
     setSession(null)
+    setStructuredDraft({})
+    setImportantParagraphs([])
     setReinforcing(false)
+    setReviewing(false)
     setAnswer('')
     setThreeSentenceDrafts([])
     setParagraphCursor(0)
@@ -1307,14 +1684,24 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
 
   const localizedSteps = getLessonSteps(locale)
   const legacyReadOnly = session?.flowId === 'legacy-8'
-  const step = session && !legacyReadOnly ? localizedSteps[Math.min(session.currentStep, localizedSteps.length - 1)] : null
+  const historicalReadOnly = session?.flowId === 'reading-10' && session.courseVersion === 'guided-reading-10-v0'
+  const readOnly = legacyReadOnly || historicalReadOnly
+  const step = session && !readOnly ? localizedSteps[Math.min(session.currentStep, localizedSteps.length - 1)] : null
+  const isStructuredStep = Boolean(step && !reinforcing && structuredFieldsForStep(step.id).length > 0)
+  const argumentReady = step?.id !== 'toulmin-full' || Boolean(session?.argumentId?.trim())
+  const structuredComplete = Boolean(step && isStructuredStep && isStructuredDraftComplete(step.id, structuredDraft) && argumentReady)
   const progressTotal = legacyReadOnly ? 8 : LESSON_STEPS.length
-  const progressValue = session ? Math.min(session.currentStep + 1, progressTotal) : 0
-  const displayedQuestion = session && step && (session.currentStep === 2 || (session.currentStep === 0 && session.turns.length === 0 && !session.draft.trim()))
-    ? step.question
-    : session?.currentQuestion || step?.question || ''
+  const progressValue = trainingProgress(session).recorded
+  const displayedQuestion = session && step
+    ? reinforcing ? session.currentQuestion : step.question
+    : ''
   const latestTurn = session?.turns.at(-1)
-  const completed = session?.flowId === 'reading-10' && session.currentStep === LESSON_STEPS.length
+  const simpleArgumentTurn = effectiveTrainingTurns(session).find((turn) => turn.stepId === 'toulmin-simple')
+  const priorContextTurn = step?.id === 'toulmin-full' ? simpleArgumentTurn : latestTurn
+  const priorContextStep = priorContextTurn?.stepId ? localizedSteps.find((candidate) => candidate.id === priorContextTurn.stepId) : undefined
+  const completed = !editing && session?.flowId === 'reading-10' && trainingProgress(session).isComplete
+  const needsReview = Boolean(!reinforcing && step && session?.stepRecords?.[step.id]?.status === 'needs-review')
+  const reviewTurn = reviewTurnIndex === null ? null : session?.turns[reviewTurnIndex] ?? null
   const transition = latestTurn?.feedback && latestTurn.stepId === 'preview'
     ? t('coach.transitionAfterPreview')
     : latestTurn?.feedback && latestTurn.stepId === 'quick-browse'
@@ -1333,9 +1720,10 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
           </div>
         </div>
         {session && (
-          <div className="coach-progress" role="progressbar" aria-valuemin={1} aria-valuemax={progressTotal} aria-valuenow={progressValue} aria-label={`${progressValue} / ${progressTotal}`}>
+          <div className="coach-progress" role="progressbar" aria-valuemin={0} aria-valuemax={progressTotal} aria-valuenow={progressValue} aria-label={`${progressValue} / ${progressTotal}`}>
             <strong>{progressValue} / {progressTotal}</strong>
             <span className="progress-track"><span style={{ width: `${(progressValue / progressTotal) * 100}%` }} /></span>
+            {trainingProgress(session).pendingReview > 0 && <small>{t('coach.pendingReviewCount', { count: trainingProgress(session).pendingReview })}</small>}
           </div>
         )}
       </div>
@@ -1349,19 +1737,52 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
             <li>{t('coach.preRead2')}</li>
             <li>{t('coach.preRead3')}</li>
           </ol>
-          <button className="primary-button" type="button" onClick={() => void start()} disabled={busy}>
+          <label className="read-confirmation">
+            <input type="checkbox" checked={preReadConfirmed} onChange={(event) => setPreReadConfirmed(event.target.checked)} disabled={busy} />
+            <span>{t('coach.readConfirm')}</span>
+          </label>
+          <button className="primary-button" type="button" onClick={() => void start()} disabled={busy || !preReadConfirmed}>
             {busy ? t('coach.starting') : aiConfigured ? t('coach.startAi') : t('coach.start')}
           </button>
           {!aiConfigured && <button className="text-button" type="button" onClick={() => void sendExtensionMessage({ type: 'open-settings' })}>{t('coach.goSettings')}</button>}
         </div>
-      ) : legacyReadOnly ? (
+      ) : readOnly ? (
         <div className="coach-start">
-          <p className="round-instruction">{t('coach.legacyReadOnly')}</p>
+          <p className="round-instruction">{historicalReadOnly ? t('coach.historicalReadOnly') : t('coach.legacyReadOnly')}</p>
           <button className="primary-button" type="button" onClick={() => void start()} disabled={busy}>
             {busy ? t('coach.starting') : t('coach.startTenStep')}
           </button>
         </div>
-      ) : completed && !reinforcing ? (
+      ) : reviewing && reviewTurn ? (
+        <div className="coach-review">
+          <div className="round-meta">
+            <span>{t('coach.reviewOnly')}</span>
+            <strong>{reviewTurn.stepId ?? t('coach.heading')}</strong>
+          </div>
+          <h3>{reviewTurn.question}</h3>
+          <div className="review-answer">
+            <strong>{t('coach.myAnswer')}</strong>
+            <p>{reviewTurn.answer}</p>
+          </div>
+          {reviewTurn.feedback && <FeedbackCard feedback={reviewTurn.feedback} referenceAnswer={reviewTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(reviewTurn)} />}
+          {reviewTurn.revisionReason && <p>{t('coach.revisionReason')}: {reviewTurn.revisionReason}</p>}
+          {!reviewTurn.feedback && <button className="secondary-button" type="button" disabled={feedbackBusy || Boolean(bridge)} onClick={() => void gradeSavedAnswer(reviewTurn)}>{feedbackBusy ? t('coach.grading') : aiConfigured ? t('coach.optionalFeedback') : t('coach.generateBridge')}</button>}
+          {bridge && <BridgeCard bridge={bridge} reply={bridgeReply} error={bridgeError} busy={busy} onCopy={() => void copyBridgePrompt()} onOpenChat={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')} onReply={setBridgeReply} onImport={() => void importBridgeFeedback()} />}
+          <div className="round-actions">
+            <button className="secondary-button" type="button" onClick={() => { setReviewing(false); setReviewTurnIndex(null); setBridge(null) }} disabled={busy}>{t('coach.closeReview')}</button>
+            <button className="primary-button" type="button" onClick={() => void editReviewedTurn()} disabled={busy || Boolean(bridge) || session.stepRecords?.[reviewTurn.stepId ?? '']?.answerVersionId !== reviewTurn.answerVersionId}>{t('coach.editReviewed')}</button>
+          </div>
+        </div>
+      ) : reinforcing ? (
+        <div className="coach-round">
+          <h3>{t('coach.reinforceLabel')}</h3>
+          <textarea aria-label={t('coach.reinforceLabel')} value={answer} maxLength={4000} onChange={(event) => setAnswer(event.target.value)} disabled={busy} />
+          <div className="round-actions">
+            <button type="button" className="primary-button" onClick={() => void saveReinforcement()} disabled={busy || answer.trim().length < 5}>{t('coach.saveContinue')}</button>
+            <button type="button" className="secondary-button" onClick={() => setReinforcing(false)} disabled={busy}>{t('coach.closeReview')}</button>
+          </div>
+        </div>
+      ) : completed ? (
         <>
           {testMode && <TestStepNavigator steps={localizedSteps} currentStep={session.currentStep} busy={busy} onJump={(stepIndex) => void jumpToTestStep(stepIndex)} />}
           <div className="coach-complete">
@@ -1372,7 +1793,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
             </div>
             {canGoBack && <button className="secondary-button" type="button" onClick={() => void rewind()} disabled={busy}>{t('coach.back')}</button>}
             <button className="secondary-button" type="button" onClick={() => void reset()}>{t('coach.restart')}</button>
-            <button className="secondary-button" type="button" onClick={() => { setReinforcing(true); setAnswer(''); setHintVisible(false); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>{t('coach.reinforce')}</button>
+            <button className="secondary-button" type="button" onClick={() => { setPracticeId(crypto.randomUUID()); setReinforcing(true); setAnswer(''); setHintVisible(false); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>{t('coach.reinforce')}</button>
           </div>
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} referenceAnswer={latestTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(latestTurn)} />}
         </>
@@ -1385,6 +1806,20 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
           {testMode && <TestStepNavigator steps={localizedSteps} currentStep={session.currentStep} busy={busy} onJump={(stepIndex) => void jumpToTestStep(stepIndex)} />}
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} referenceAnswer={latestTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(latestTurn)} />}
           {transition && <p className="round-transition">{transition}</p>}
+          {needsReview && (
+            <div className="review-required" role="status">
+              <p>{t('coach.needsReview')}</p>
+              <button className="secondary-button" type="button" onClick={() => void confirmStillApplies()} disabled={busy || Boolean(bridge)}>{t('coach.confirmStillApplies')}</button>
+            </div>
+          )}
+          {priorContextTurn && priorContextTurn.answer && priorContextTurn.stepId !== step.id && (
+            <details className="prior-context" open={step.id === 'toulmin-full'}>
+              <summary>{step.id === 'toulmin-full' ? t('coach.argumentContext') : t('coach.previousWork')}</summary>
+              <strong>{priorContextStep?.name ?? t('coach.heading')}</strong>
+              <p>{priorContextTurn.answer}</p>
+              {step.id === 'toulmin-full' && session?.argumentId && <small>{t('coach.argumentIdLabel', { id: session.argumentId })}</small>}
+            </details>
+          )}
           <h3>{displayedQuestion}</h3>
           <p className="round-instruction">{step.instruction}</p>
           <button className="text-button hint-toggle" type="button" onClick={() => setHintVisible((visible) => !visible)}>{hintVisible ? t('coach.hideHint') : t('coach.showHint')}</button>
@@ -1395,7 +1830,7 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
                 <>
                   <div className="paragraph-progress">
                     <span>{t('coach.paragraphProgress', { current: paragraphCursor + 1, total: paragraphs.length })}</span>
-                    <strong>第 {currentParagraph.paragraph} 段</strong>
+                    <strong>{t('coach.selectedParagraphs', { count: importantParagraphs.length })}</strong>
                   </div>
                   <div className="source-paragraph-card">
                     <p>{currentParagraph.text}</p>
@@ -1403,18 +1838,31 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
                       <small>{t('coach.singleSentenceHint')}</small>
                     )}
                   </div>
+                  <label className="paragraph-selection">
+                    <input type="checkbox" checked={currentParagraphSelected} onChange={() => toggleImportantParagraph(currentParagraph.paragraph)} disabled={busy || Boolean(bridge)} />
+                    <span>{t('coach.markImportant')}</span>
+                  </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.what')}</span>
-                    <textarea value={currentParagraphDraft?.what ?? ''} onChange={(event) => updateThreeSentenceField('what', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge)} />
+                    <textarea value={currentParagraphDraft?.what ?? ''} onChange={(event) => updateThreeSentenceField('what', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
                   </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.why')}</span>
                     <small>{t('coach.threeSentence.whyHint')}</small>
-                    <textarea value={currentParagraphDraft?.why ?? ''} onChange={(event) => updateThreeSentenceField('why', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge)} />
+                    <textarea value={currentParagraphDraft?.why ?? ''} onChange={(event) => updateThreeSentenceField('why', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
                   </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.takeaway')}</span>
-                    <textarea value={currentParagraphDraft?.takeaway ?? ''} onChange={(event) => updateThreeSentenceField('takeaway', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge)} />
+                    <textarea value={currentParagraphDraft?.takeaway ?? ''} onChange={(event) => updateThreeSentenceField('takeaway', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
+                  </label>
+                  <label className="three-sentence-field">
+                    <span>{t('coach.threeSentence.role')}</span>
+                    <textarea value={currentParagraphDraft?.role ?? ''} onChange={(event) => updateThreeSentenceField('role', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
+                  </label>
+                  <label className="three-sentence-field">
+                    <span>{t('coach.threeSentence.evidence')}</span>
+                    <small>{t('coach.threeSentence.whyHint')}</small>
+                    <textarea value={currentParagraphDraft?.evidence ?? ''} onChange={(event) => updateThreeSentenceField('evidence', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
                   </label>
                   <div className="paragraph-navigation">
                     <button className="secondary-button" type="button" onClick={() => moveToParagraph(paragraphCursor - 1)} disabled={busy || paragraphCursor === 0 || Boolean(bridge)}>{t('coach.previousParagraph')}</button>
@@ -1423,33 +1871,129 @@ function TrainingCoach({ article }: { article: SavedArticle }) {
                 </>
               ) : <p className="round-instruction">{t('coach.paragraphIncomplete')}</p>}
             </div>
+          ) : step.id === 'quick-browse' && (structuredDraft['quickBrowse.paragraphMap'] !== undefined || (!structuredDraft['quickBrowse.paragraphLabels'] && !structuredDraft['quickBrowse.representativeSentences'])) ? (
+            <BrowseTrainingForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} previewQuestion={effectiveTrainingTurns(session).find((turn) => turn.stepId === 'preview')?.structuredDraft?.['preview.expectedQuestion'] ?? ''} />
+          ) : step.id === 'questions' && (structuredDraft['questions.items'] !== undefined || !structuredDraft['questions.question']) ? (
+            <QuestionsTrainingForm draft={structuredDraft} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />
+          ) : isThreePointsStep ? (
+            <>
+              <ThreePointsTrainingForm answer={answer} locale={locale} disabled={busy || Boolean(bridge)} onChange={(value) => {
+                setAnswer(value)
+                const evidence = readSummaryEvidence(structuredDraft['threePoints.evidence'])
+                if (evidence?.checked) updateStructuredField('threePoints.evidence', JSON.stringify({ ...evidence, checked: false }))
+              }} />
+              {structuredDraft['threePoints.evidence'] !== undefined && session.articleSnapshot ? <SummaryEvidenceForm value={structuredDraft['threePoints.evidence']} snapshot={session.articleSnapshot} disabled={busy || Boolean(bridge)} onChange={(value) => updateStructuredField('threePoints.evidence', value)} /> : <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />}
+            </>
+          ) : isStructuredStep ? (
+            <>
+              {step.id === 'preview' && structuredDraft['preview.metadata'] !== undefined && <MetadataReviewForm value={structuredDraft['preview.metadata']} disabled={busy || Boolean(bridge)} onChange={(value) => updateStructuredField('preview.metadata', value)} />}
+              {step.id === 'assumptions' && readQuestions(effectiveTrainingTurns(session).find((turn) => turn.stepId === 'questions')?.structuredDraft?.['questions.items']).filter((row) => row.selected).map((row) => <details key={row.id}><summary>{t('coach.questions.key')}: {row.question}</summary><p>{row.whyImportant}</p><p>{t('coach.field.answered')}: {row.answered}</p><p>{t('coach.field.unanswered')}: {row.unanswered}</p></details>)}
+              {['assumptions', 'toulmin-simple', 'toulmin-full'].includes(step.id) && <ApplicabilityForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />}
+              {structuredDraft['applicability.mode'] !== 'not-applicable' && <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />}
+            </>
           ) : (
             <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={8} maxLength={4000} disabled={busy || Boolean(bridge)} />
           )}
+          {editing && <label className="structured-field">{t('coach.revisionReason')}<textarea value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} rows={2} disabled={busy} /></label>}
           <div className="round-footer">
             <span>{answer.length.toLocaleString()} / {answerMaxLength.toLocaleString()} {t('common.characters')}</span>
             <div className="round-actions">
+              {editing ? <>
+                <button className="secondary-button" type="button" disabled={busy} onClick={() => { applySession(editing.base); setEditing(null); setError('') }}>{t('coach.cancelEdit')}</button>
+                <button className="primary-button" type="button" disabled={busy || !revisionReason.trim()} onClick={() => void saveRevision()}>{t('coach.saveRevision')}</button>
+              </> : <>
               {canGoBack && <button className="secondary-button" type="button" onClick={() => void rewind()} disabled={busy}>{t('coach.back')}</button>}
-              <button className="primary-button" type="button" onClick={() => void submit()} disabled={busy || Boolean(bridge) || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete)}>
-                {busy ? aiConfigured ? t('coach.grading') : t('coach.saving') : aiConfigured ? t('coach.submit') : t('coach.generateBridge')}
+              <button className="primary-button" type="button" onClick={() => void continueWithoutAi()} disabled={busy || Boolean(bridge) || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>{t('coach.saveContinue')}</button>
+              <button className="secondary-button" type="button" onClick={() => void submit()} disabled={busy || Boolean(bridge) || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>
+                {busy ? t('coach.saving') : aiConfigured ? t('coach.optionalFeedback') : t('coach.generateBridge')}
               </button>
+              </>}
             </div>
           </div>
-          {bridge && <BridgeCard bridge={bridge} reply={bridgeReply} error={bridgeError} busy={busy} onCopy={() => void copyBridgePrompt()} onOpenChat={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')} onReply={setBridgeReply} onImport={() => void importBridgeFeedback()} />}
-          {session.turns.length > 0 && (
-            <details className="training-history">
-              <summary>{t('coach.history', { count: session.turns.length })}</summary>
-              {session.turns.map((turn) => (
-                <div key={`${turn.stepIndex}-${turn.submittedAt}`}>
-                  <strong>{t('coach.round', { number: turn.stepIndex + 1 })}{turn.feedback ? ` · ${turn.feedback.total} / 100` : ''}</strong>
-                  <p>{turn.answer}</p>
-                </div>
-              ))}
-            </details>
+          {saveStatus !== 'idle' && (
+            <div className="save-status-row">
+              <p className="save-status" role="status">{t(`coach.saveStatus.${saveStatus}`)}</p>
+              {saveStatus === 'error' && !saveConflict && <button className="text-button" type="button" onClick={() => void retrySave()} disabled={busy}>{t('coach.retrySave')}</button>}
+            </div>
           )}
+          {bridge && <BridgeCard bridge={bridge} reply={bridgeReply} error={bridgeError} busy={busy} onCopy={() => void copyBridgePrompt()} onOpenChat={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')} onReply={setBridgeReply} onImport={() => void importBridgeFeedback()} />}
         </div>
       ) : null}
       {error && <p className="inline-error" role="alert">{error}</p>}
+      {!editing && !readOnly && session && session.turns.length > 0 && <details className="training-history">
+        <summary>{t('coach.history', { count: effectiveTrainingTurns(session, true).length })}</summary>
+        {effectiveTrainingTurns(session, true).map((turn) => <div key={turn.answerVersionId ?? turn.stepId}>
+          <strong>{t('coach.round', { number: turn.stepIndex + 1 })}{turn.feedback ? ` · ${turn.feedback.total} / 100` : ''}</strong>
+          <button type="button" className="text-button" disabled={busy || Boolean(bridge)} onClick={() => { setReviewing(true); setReviewTurnIndex(session.turns.indexOf(turn)) }}>{t('coach.reviewOnly')}</button>
+        </div>)}
+      </details>}
+      {saveConflict && session && <div className="review-required" role="alert">
+        <p>{t('coach.saveConflict')}</p>
+        <details open><summary>{t('coach.remoteDraft')}</summary><pre>{editing ? saveConflict.turns.find((turn) => turn.answerVersionId === saveConflict.stepRecords?.[session.currentStepId ?? '']?.answerVersionId)?.answer ?? saveConflict.draft : saveConflict.draft}</pre></details>
+        <details open><summary>{t('coach.localDraft')}</summary><pre>{answer}</pre></details>
+        <button className="secondary-button" type="button" disabled={busy} onClick={() => { applySession(saveConflict); setEditing(null); setError('') }}>{t('coach.useRemote')}</button>
+        {!editing && canRetryTrainingDraft(session, saveConflict) && <button className="primary-button" type="button" disabled={busy} onClick={async () => { setBusy(true); const saved = await persistCurrentDraft(saveConflict); setSaveStatus(saved ? 'saved' : 'error'); setBusy(false) }}>{t('coach.keepLocal')}</button>}
+        {editing && editing.base.sessionId === saveConflict.sessionId && editing.base.articleSnapshotId === saveConflict.articleSnapshotId && <button className="primary-button" type="button" disabled={busy} onClick={() => {
+          const target = saveConflict.turns.findLastIndex((turn) => turn.stepId === session.currentStepId && turn.answerVersionId === saveConflict.stepRecords?.[session.currentStepId ?? '']?.answerVersionId)
+          if (target < 0) return
+          setEditing({ base: saveConflict, turnIndex: target }); setSaveConflict(null); setError('')
+        }}>{t('coach.keepLocal')}</button>}
+        <button className="text-button" type="button" onClick={() => downloadText(JSON.stringify({ sessionId: session.sessionId, stepId: session.currentStepId, answer, structuredDraft, importantParagraphs, threeSentenceDrafts, revisionReason }, null, 2), 'reading-unsaved-draft.json', 'application/json')}>{t('coach.downloadDraft')}</button>
+      </div>}
+      {!editing && session && Object.values(session.stepRecords ?? {}).some((record) => record.status === 'needs-review') && <details className="training-history">
+        <summary>{t('coach.reviewChanges')}</summary>
+        {Object.values(session.stepRecords ?? {}).filter((record) => record.status === 'needs-review').map((record) => <div key={record.stepId}>
+          <strong>{localizedSteps.find((item) => item.id === record.stepId)?.name}</strong><p>{record.draft}</p>
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => void confirmReviewedStep(record.stepId)}>{t('coach.confirmStillApplies')}</button>
+        </div>)}
+      </details>}
+      {session && <button type="button" className="text-button" onClick={() => setHistoryView(session)}>{t('coach.historyView')}</button>}
+      {historySessions.length > 1 && (
+        <details className="training-history session-history-list">
+          <summary>{t('coach.historySessions', { count: historySessions.length })}</summary>
+          {historySessions.map((item) => (
+            <div className="history-session-row" key={item.sessionId ?? `${item.articleId}-${item.startedAt}`}>
+              <span>{item.courseVersion ?? item.flowId} · {item.turns.length} {t('coach.rounds')}</span>
+              <small>{item.isArchived ? t('coach.historyArchived') : t('coach.historyCurrent')}</small>
+              <button className="text-button" type="button" onClick={() => setHistoryView(item)}>{t('coach.historyView')}</button>
+            </div>
+          ))}
+        </details>
+      )}
+      {historyView && <TrainingHistoryView session={historyView} onClose={() => setHistoryView(null)} onExport={(format) => exportHistorySession(historyView, format)} />}
+    </section>
+  )
+}
+
+function TrainingHistoryView({ session, onClose, onExport }: { session: TrainingSession; onClose: () => void; onExport: (format: 'markdown' | 'json') => void }) {
+  const { t } = useI18n()
+  return (
+    <section className="history-view" aria-label={t('coach.historyView')}>
+      <div className="round-meta">
+        <span>{session.isArchived ? t('coach.historyArchived') : t('coach.historyCurrent')}</span>
+        <strong>{session.courseVersion ?? session.flowId}</strong>
+      </div>
+      {session.turns.length === 0 ? <p>{t('coach.historyEmpty')}</p> : session.turns.map((turn, index) => (
+        <article className="history-view-turn" key={`${turn.answerVersionId ?? index}-${turn.submittedAt}`}>
+          <h4>{t('coach.round', { number: turn.stepIndex + 1 })} · {turn.stepId ?? turn.stepIndex + 1}</h4>
+          <p><strong>{t('coach.question')}</strong> {turn.question}</p>
+          <p><strong>{t('coach.myAnswer')}</strong> {turn.answer}</p>
+          {turn.feedback && <p><strong>{t('coach.score')}</strong> {turn.feedback.total} / 100</p>}
+        </article>
+      ))}
+      {session.answerVersions?.filter((version) => !session.turns.some((turn) => turn.answerVersionId === version.id)).map((version) => (
+        <article className="history-view-turn" key={version.id}>
+          <h4>{t('coach.round', { number: version.stepIndex + 1 })} · {version.id}</h4>
+          <p>{version.answer}</p>
+          {version.feedback && <FeedbackCard feedback={version.feedback} />}
+        </article>
+      ))}
+      {session.reinforcements?.map((item) => <article className="history-view-turn" key={item.id}><h4>{t('coach.reinforceLabel')}</h4><p>{item.answer}</p></article>)}
+      <div className="round-actions">
+        <button className="secondary-button" type="button" onClick={() => onExport('markdown')}>{t('training.markdown')}</button>
+        <button className="secondary-button" type="button" onClick={() => onExport('json')}>{t('training.json')}</button>
+        <button className="secondary-button" type="button" onClick={onClose}>{t('coach.closeReview')}</button>
+      </div>
     </section>
   )
 }
@@ -1489,6 +2033,167 @@ function TestStepNavigator({
         ))}
       </nav>
     </section>
+  )
+}
+
+function ThreePointsTrainingForm({
+  answer,
+  locale,
+  disabled,
+  onChange,
+}: {
+  answer: string
+  locale: string
+  disabled: boolean
+  onChange: (value: string) => void
+}) {
+  const { t } = useI18n()
+  const points = parseThreePointsAnswer(answer)
+  return (
+    <div className="three-points-form">
+      <p className="structured-training-hint">{t('coach.threePointsHint')}</p>
+      {points.map((point, index) => (
+        <label className="three-points-field" key={index}>
+          <span>{t('coach.threePointLabel', { number: index + 1 })}</span>
+          <input
+            value={point}
+            onChange={(event) => {
+              const next = [...points]
+              next[index] = event.target.value
+              onChange(next.join('\n'))
+            }}
+            maxLength={4000}
+            disabled={disabled}
+          />
+          <small>{summaryPointLength(point, locale)} / 15 {locale === 'en' ? 'words' : ''}</small>
+        </label>
+      ))}
+    </div>
+  )
+}
+
+function parseThreePointsAnswer(answer: string) {
+  const points = answer
+    .split(/\r?\n/)
+    .map((point) => point.replace(/^\s*(?:[-*•]|\d+[.)、])\s*/, '').trim())
+    .slice(0, 3)
+  return [points[0] ?? '', points[1] ?? '', points[2] ?? '']
+}
+
+function formatStructuredAnswer(
+  stepId: string,
+  draft: TrainingStructuredDraft,
+  translateText: (key: string) => string,
+) {
+  return (STRUCTURED_FIELD_DEFINITIONS[stepId] ?? [])
+    .filter(({ id }) => requiredFieldsForDraft(stepId, draft).includes(id))
+    .filter(({ id }) => Boolean(draft[id]?.trim()))
+    .map(({ id, labelKey }) => id === 'quickBrowse.paragraphMap'
+      ? readBrowseRows(draft[id]).map((row) => `${row.paragraph} [${row.sourceId}] ${row.role ? translateText(`coach.browse.role.${row.role}`) : ''}${row.important ? ` · ${translateText('coach.browse.candidate')}` : ''}\n${translateText('coach.browse.first')}: ${row.first}\n${translateText('coach.browse.last')}: ${row.last}`).join('\n')
+      : id === 'questions.items' ? formatQuestions(draft[id], translateText) : id === 'preview.metadata' ? formatMetadataReview(draft[id], translateText) : `${translateText(labelKey)}：${draft[id]?.trim() ?? ''}`)
+    .join('\n')
+}
+
+function BrowseTrainingForm({ blocks, draft, disabled, onChange, previewQuestion }: {
+  blocks: import('./types').ArticleBlock[]
+  draft: TrainingStructuredDraft
+  disabled: boolean
+  onChange: (field: TrainingDraftFieldId, value: string) => void
+  previewQuestion: string
+}) {
+  const { t } = useI18n()
+  const rows = draft['quickBrowse.paragraphMap'] === undefined ? createBrowseRows(blocks) : readBrowseRows(draft['quickBrowse.paragraphMap'])
+  const updateRow = (index: number, change: Partial<(typeof rows)[number]>) => onChange('quickBrowse.paragraphMap', JSON.stringify(rows.map((row, i) => i === index ? { ...row, ...change } : row)))
+  return <div className="structured-training-form">
+    {previewQuestion && <p>{t('coach.field.expectedQuestion')}: {previewQuestion}</p>}
+    <label className="structured-field"><span>{t('coach.field.structure')}</span><textarea value={draft['quickBrowse.structure'] ?? ''} maxLength={800} disabled={disabled} onChange={(event) => onChange('quickBrowse.structure', event.target.value)} /></label>
+    <p>{t('coach.browse.hint')}</p>
+    {rows.map((row, index) => <details key={row.sourceId}>
+      <summary>{t('feedback.paragraph', { number: row.paragraph })} {row.role ? t(`coach.browse.role.${row.role}`) : '—'}{row.important ? ' ★' : ''}</summary>
+      <fieldset disabled={disabled}>
+      <legend>{t('feedback.paragraph', { number: row.paragraph })}</legend>
+      <details><summary>{t('export.sourceText')}</summary><p>{numberArticleBlocks(blocks).find((item) => item.paragraph === row.paragraph)?.text}</p></details>
+      <label className="structured-field"><span>{t('coach.field.paragraphLabels')}</span><select value={row.role} onChange={(event) => updateRow(index, { role: event.target.value })}><option value="">—</option>{PARAGRAPH_ROLES.map((role) => <option value={role} key={role}>{t(`coach.browse.role.${role}`)}</option>)}</select></label>
+      <label className="structured-field"><span>{t('coach.browse.first')}</span><textarea value={row.first} onChange={(event) => updateRow(index, { first: event.target.value })} /></label>
+      <label className="structured-field"><span>{t('coach.browse.last')}</span><textarea value={row.last} onChange={(event) => updateRow(index, { last: event.target.value })} /></label>
+      <label><input type="checkbox" checked={row.important} onChange={(event) => updateRow(index, { important: event.target.checked })} />{t('coach.browse.candidate')}</label>
+    </fieldset></details>)}
+  </div>
+}
+
+function QuestionsTrainingForm({ draft, disabled, onChange }: {
+  draft: TrainingStructuredDraft
+  disabled: boolean
+  onChange: (field: TrainingDraftFieldId, value: string) => void
+}) {
+  const { t } = useI18n()
+  const rows = readQuestions(draft['questions.items'])
+  const save = (next: ReadingQuestion[]) => onChange('questions.items', JSON.stringify(next))
+  const update = (id: string, patch: Partial<ReadingQuestion>) => save(rows.map((row) => row.id === id ? { ...row, ...patch } : row))
+  return <div className="structured-training-form">
+    <p>{t('coach.questions.hint')}</p>
+    {rows.map((row) => <fieldset key={row.id} disabled={disabled}>
+      <legend>{t('coach.field.question')}</legend>
+      <label className="structured-field"><span>{t('coach.field.questionCategory')}</span><select value={row.category} onChange={(event) => update(row.id, { category: event.target.value })}>{QUESTION_CATEGORIES.map((category) => <option value={category} key={category}>{category.toUpperCase()}</option>)}</select></label>
+      <label className="structured-field"><span>{t('coach.field.question')}</span><textarea value={row.question} maxLength={800} onChange={(event) => update(row.id, { question: event.target.value })} /></label>
+      <label><input type="checkbox" checked={row.selected} disabled={!row.selected && rows.filter((item) => item.selected).length >= 2} onChange={(event) => update(row.id, { selected: event.target.checked })} />{t('coach.questions.key')}</label>
+      {row.selected && (['whyImportant', 'relatedParagraphs', 'answered', 'unanswered'] as const).map((field) => <label className="structured-field" key={field}><span>{t(`coach.field.${field}`)}</span><textarea value={row[field]} maxLength={800} onChange={(event) => update(row.id, { [field]: event.target.value })} /></label>)}
+      <button className="text-button" type="button" onClick={() => save(rows.filter((item) => item.id !== row.id))}>{t('coach.questions.remove')}</button>
+    </fieldset>)}
+    <button className="secondary-button" type="button" disabled={disabled || rows.length >= 20} onClick={() => save([...rows, { id: crypto.randomUUID(), category: 'what', question: '', selected: false, whyImportant: '', relatedParagraphs: '', answered: '', unanswered: '' }])}>{t('coach.questions.add')}</button>
+  </div>
+}
+
+function ApplicabilityForm({ blocks, draft, disabled, onChange }: {
+  blocks: import('./types').ArticleBlock[]
+  draft: TrainingStructuredDraft
+  disabled: boolean
+  onChange: (field: TrainingDraftFieldId, value: string) => void
+}) {
+  const { t } = useI18n()
+  const selected = draft['applicability.mode'] === 'not-applicable'
+  return <fieldset disabled={disabled}>
+    <legend>{t('coach.applicability.mode')}</legend>
+    <label><input type="checkbox" checked={selected} onChange={(event) => onChange('applicability.mode', event.target.checked ? 'not-applicable' : 'applicable')} />{t('coach.applicability.none')}</label>
+    {selected && <>
+      <p>{t('coach.applicability.hint')}</p>
+      <label className="structured-field"><span>{t('coach.applicability.reason')}</span><textarea maxLength={800} value={draft['applicability.reason'] ?? ''} onChange={(event) => onChange('applicability.reason', event.target.value)} /></label>
+      <label className="structured-field"><span>{t('coach.applicability.source')}</span><select value={draft['applicability.sourceId'] ?? ''} onChange={(event) => onChange('applicability.sourceId', event.target.value)}><option value="">—</option>{blocks.flatMap((block) => { const text = 'text' in block ? block.text : block.type === 'list' ? block.items.join('\n') : block.type === 'image' ? block.alt : ''; return block.id && text ? [<option key={block.id} value={block.id}>{text.slice(0, 80)}</option>] : [] })}</select></label>
+      <label className="structured-field"><span>{t('coach.applicability.quote')}</span><textarea maxLength={800} value={draft['applicability.quote'] ?? ''} onChange={(event) => onChange('applicability.quote', event.target.value)} /></label>
+    </>}
+  </fieldset>
+}
+
+function StructuredTrainingForm({
+  stepId,
+  draft,
+  disabled,
+  onChange,
+}: {
+  stepId: string
+  draft: TrainingStructuredDraft
+  disabled: boolean
+  onChange: (field: TrainingDraftFieldId, value: string) => void
+}) {
+  const { t } = useI18n()
+  const fields = (STRUCTURED_FIELD_DEFINITIONS[stepId] ?? []).filter((field) => requiredFieldsForDraft(stepId, draft).includes(field.id) && !field.id.startsWith('applicability.') && !['quickBrowse.paragraphMap', 'questions.items', 'preview.metadata', 'threePoints.evidence'].includes(field.id))
+
+  return (
+    <div className="structured-training-form">
+      <p className="structured-training-hint">{t('coach.structuredHint')}</p>
+      <div className="structured-field-list">
+        {fields.map((field) => (
+          <label className="structured-field" key={field.id}>
+            <span>{t(field.labelKey)}</span>
+            {field.multiline ? (
+              <textarea value={draft[field.id] ?? ''} onChange={(event) => onChange(field.id, event.target.value)} rows={field.rows ?? 3} maxLength={structuredFieldLimit(field)} disabled={disabled} />
+            ) : (
+              <input value={draft[field.id] ?? ''} onChange={(event) => onChange(field.id, event.target.value)} maxLength={structuredFieldLimit(field)} disabled={disabled} />
+            )}
+          </label>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -1538,7 +2243,7 @@ function FeedbackCard({
       )}
       <details className="feedback-sources">
         <summary>{t('feedback.sources')}</summary>
-        {feedback.sources.map((source) => <p key={`${source.paragraph}-${source.quote}`}><strong>{t('feedback.paragraph', { number: source.paragraph })}</strong>“{source.quote}”<br />{source.comment}</p>)}
+        {feedback.sources.map((source) => <p key={`${source.blockId ?? source.paragraph}-${source.quote}`}><strong>{source.blockId ? t('feedback.sourceBlock', { id: source.blockId }) : t('feedback.paragraph', { number: source.paragraph })}</strong>“{source.quote}”<br />{source.comment}</p>)}
       </details>
       <div className="reference-answer">
         <div className="reference-answer-heading">
@@ -1554,7 +2259,7 @@ function FeedbackCard({
             <p className="reference-answer-copy">{referenceAnswer.answer}</p>
             <details className="feedback-sources">
               <summary>{t('feedback.referenceSources')}</summary>
-              {referenceAnswer.sources.map((source) => <p key={`${source.paragraph}-${source.quote}`}><strong>{t('feedback.paragraph', { number: source.paragraph })}</strong>“{source.quote}”<br />{source.comment}</p>)}
+              {referenceAnswer.sources.map((source) => <p key={`${source.blockId ?? source.paragraph}-${source.quote}`}><strong>{source.blockId ? t('feedback.sourceBlock', { id: source.blockId }) : t('feedback.paragraph', { number: source.paragraph })}</strong>“{source.quote}”<br />{source.comment}</p>)}
             </details>
           </>
         ) : !canGenerateReferenceAnswer ? <p className="reference-answer-note">{t('feedback.referenceAnswerUnavailable')}</p> : null}

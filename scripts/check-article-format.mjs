@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'vite'
-import { articleBlocksFromText, articleBlocksToText, normalizeArticleBlocks, numberArticleBlocks } from '../src/articles/format.ts'
+import { articleBlocksFromText, articleBlocksToText, createTrainingArticleSnapshot, normalizeArticleBlocks, numberArticleBlocks } from '../src/articles/format.ts'
 
 const server = await createServer({ root: new URL('..', import.meta.url).pathname, logLevel: 'silent' })
 const { buildGradePrompt, validateAiFeedback } = await server.ssrLoadModule('/src/ai/coach.ts')
@@ -66,6 +66,39 @@ const numberedBlocks = [
   { type: 'image', src: 'https://images.example.com/article.jpg', alt: '' },
   { type: 'paragraph', text: '结尾说明' },
 ]
+const snapshotInput = {
+  id: 'snapshot-article',
+  title: '快照文章',
+  text: '开头背景\n\n结尾说明',
+  capturedAt: '2026-01-01T00:00:00.000Z',
+  source: 'manual',
+}
+const snapshotA = createTrainingArticleSnapshot(snapshotInput)
+const snapshotB = createTrainingArticleSnapshot(snapshotInput)
+assert.equal(snapshotA.id, snapshotB.id)
+assert.deepEqual(snapshotA.blocks.map((block) => block.id), snapshotB.blocks.map((block) => block.id))
+assert.ok(snapshotA.blocks.every((block) => block.id?.startsWith('source-')))
+const duplicateIdSnapshot = createTrainingArticleSnapshot({
+  ...snapshotInput,
+  blocks: [
+    { type: 'paragraph', id: 'same-source', text: '第一块' },
+    { type: 'paragraph', id: 'same-source', text: '第二块' },
+  ],
+})
+assert.deepEqual(duplicateIdSnapshot.blocks.map((block) => block.id), ['same-source', 'same-source-2'])
+assert.doesNotThrow(() => validateAiFeedback({
+  dimensions: {
+    fidelity: { score: 8, reason: '回答忠于原文。' },
+    claim: { score: null, reason: '本题未测' },
+    cause: { score: null, reason: '本题未测' },
+    structure: { score: 6, reason: '记录了结构线索。' },
+  },
+  strengths: [],
+  gaps: [],
+  sources: [{ paragraph: 0, blockId: snapshotA.blocks[0].id, quote: '开头背景', comment: '标题外的来源块被稳定标识。' }],
+  nextQuestion: '下一步要看什么？',
+  nextStepId: 'quick-browse',
+}, snapshotA.text, '回答', snapshotA.blocks, 0))
 const session = {
   articleId: 'article',
   currentStep: 1,
@@ -80,6 +113,13 @@ assert.deepEqual(JSON.parse(prompt.user).paragraphs, [
   { paragraph: 1, text: '开头背景' },
   { paragraph: 2, text: '结尾说明' },
 ])
+assert.deepEqual(JSON.parse(prompt.user).sourceBlocks.map(({ type, id }) => ({ type, id })), [
+  { type: 'paragraph', id: 'block-1' },
+  { type: 'heading', id: 'block-2' },
+  { type: 'list', id: 'block-3' },
+  { type: 'image', id: 'block-4' },
+  { type: 'paragraph', id: 'block-5' },
+])
 assert.doesNotThrow(() => validateAiFeedback({
   dimensions: {
     fidelity: { score: 8, reason: '回答引用了原文。' },
@@ -91,7 +131,7 @@ assert.doesNotThrow(() => validateAiFeedback({
   gaps: [],
   sources: [{ paragraph: 2, quote: '结尾说明', comment: '这对应结尾说明。' }],
   nextQuestion: '请说明下一步如何判断？',
-  nextStepId: 'feynman-review',
+  nextStepId: 'final-review',
 }, '不按空行分段的原文', '学生回答内容', numberedBlocks))
 
 console.log('PASS: paragraph boundaries preserve intra-paragraph line breaks and blank-line separators.')
