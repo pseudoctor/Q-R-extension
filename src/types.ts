@@ -39,6 +39,14 @@ export type AiSettings = {
   endpoint: string
 }
 
+export type AiSettingsView = Omit<AiSettings, 'apiKey'> & {
+  apiKeyConfigured: boolean
+}
+
+export type StoredAiSettings = Omit<AiSettings, 'apiKey'> & {
+  apiKey?: string
+}
+
 export type AiModelOption = {
   id: string
   label: string
@@ -326,11 +334,14 @@ export type ErrorCode =
   | 'ARTICLE_TOO_SHORT'
   | 'EXTRACTION_FAILED'
   | 'STORAGE_FAILED'
+  | 'STORAGE_QUOTA'
+  | 'EXTENSION_UNAVAILABLE'
   | 'INVALID_REQUEST'
   | 'AI_NOT_CONFIGURED'
   | 'AI_PERMISSION_REQUIRED'
   | 'AI_INVALID_ENDPOINT'
   | 'AI_CONNECTION_FAILED'
+  | 'AI_RATE_LIMITED'
   | 'AI_REQUEST_FAILED'
   | 'AI_INVALID_RESPONSE'
   | 'AI_RESPONSE_INVALID_JSON'
@@ -381,7 +392,7 @@ export type ExtensionMessage =
   | { type: 'rewind-training-session'; articleId: string }
   | { type: 'reset-training-session'; articleId: string }
   | { type: 'get-ai-settings' }
-  | { type: 'save-ai-settings'; settings: AiSettings }
+  | { type: 'save-ai-settings'; settings: AiSettings; preserveApiKey?: boolean; clearApiKey?: boolean }
   | { type: 'list-ai-models'; settings: AiSettings }
   | { type: 'test-ai-connection'; settings: AiSettings }
   | { type: 'ai-start'; articleId: string }
@@ -400,7 +411,7 @@ export type StorageState = {
   trainingSessionsV2?: TrainingSessionStoreV2
   trainingSessionsV3?: TrainingSessionStoreV3
   trainingTestSessionsV3?: TrainingSessionStoreV3
-  aiSettings?: AiSettings
+  aiSettings?: StoredAiSettings
   locale?: Locale
   testMode?: boolean
   lastTrainingTabId?: number

@@ -1,8 +1,6 @@
 import type {
   AiModelOption,
   AiSettings,
-  ArticleBlock,
-  ArticleInline,
   CaptureRecord,
   ErrorCode,
   ExtensionError,
@@ -26,6 +24,7 @@ import {
   validateAiQuestion,
 } from './ai/coach'
 import {
+  isValidCustomEndpoint,
   normalizeAiSettings,
   providerById,
   providerEndpoint,
@@ -62,26 +61,19 @@ import {
   setTrainingQuestion,
   startTrainingSession,
 } from './storage/training'
-import { readAiSettings, writeAiSettings } from './storage/ai'
+import { readAiSettings, readAiSettingsView, writeAiSettings } from './storage/ai'
 import { readLocale, readTestMode, writeLocale, writeTestMode } from './storage/preferences'
 import { translate } from './i18n/messages'
 import { isTrainingDraftNavigable, isTrainingDraftValid } from './training/lessons'
 import { getLessonSteps, LESSON_STEPS, STRUCTURED_FIELD_DEFINITIONS } from './training/lessons'
+import { hasAiHostPermission } from './permissions'
+import { extractArticleFromPage, type PageExtraction } from './articles/extract'
+import { isExtensionMessage } from './extension-message-validation'
 
 const TRAINING_PAGE = 'training.html'
-
-type PageExtraction = {
-  title: string
-  url: string
-  author?: string
-  text: string
-  blocks?: ArticleBlock[]
-  selectedText?: string
-  error?: {
-    code: ErrorCode
-    message: string
-  }
-}
+const AI_RATE_WINDOW_MS = 60_000
+const AI_RATE_LIMIT = 20
+const aiRequestTimestamps: number[] = []
 
 type TrainingPageError = ExtensionError | undefined
 
@@ -140,7 +132,7 @@ async function captureCurrentPage(
       return createError(
         'PAGE_NOT_ACCESSIBLE',
         isWebPage
-          ? '插件当前没有获得该网站的读取权限，请在扩展菜单中允许访问此网站后重试。'
+          ? '插件当前没有获得该页的一次性读取权限，请先点击扩展工具栏按钮或使用快捷键激活当前页后重试。'
           : '当前页面不允许插件读取（浏览器内部页、扩展页、商店页和部分 PDF 不支持）。请切换到普通网页，或手动粘贴文章。',
       )
     }
@@ -300,20 +292,23 @@ async function saveArticle(
       savedAt: new Date().toISOString(),
     }
     return success(await upsertSavedArticle(savedArticle))
-  } catch {
-    return createError('STORAGE_FAILED', '文章保存失败，请稍后重试。')
+  } catch (error) {
+    return createError(isStorageQuotaError(error) ? 'STORAGE_QUOTA' : 'STORAGE_FAILED', '文章保存失败，请稍后重试。')
   }
 }
 
 async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse<{ provider: string; model: string }>> {
   const locale = await readLocale()
-  const normalized = normalizeAiSettings(settings)
+  const normalized = await resolveAiSettings(settings)
   if (!normalized.apiKey) {
     return createError('AI_NOT_CONFIGURED', '请先填写 API key。')
   }
+  if (!allowAiRequest()) return createError('AI_RATE_LIMITED', 'AI 请求过于频繁，请稍后再试。')
   const provider = providerById(normalized.provider)
+  if (provider.id === 'custom' && !isValidCustomEndpoint(normalized.endpoint)) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
   const endpoint = providerEndpoint(normalized)
   if (!endpoint) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
+  if (!(await hasAiHostPermission(endpoint))) return createError('AI_PERMISSION_REQUIRED', '请先允许模型服务的网络权限。')
   try {
     const response = await withTimeout(TEST_CONNECTION_TIMEOUT_MS, (signal) => fetch(endpoint, {
       method: 'POST',
@@ -321,6 +316,7 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
         Authorization: `Bearer ${normalized.apiKey}`,
         'Content-Type': 'application/json',
       },
+      redirect: 'error',
       body: JSON.stringify({
         model: normalized.model,
         messages: [{ role: 'user', content: '只回复 OK。' }],
@@ -330,8 +326,7 @@ async function testAiConnection(settings: AiSettings): Promise<ExtensionResponse
       signal,
     }))
     if (!response.ok) {
-      const detail = await providerResponseDetail(response)
-      return createError('AI_CONNECTION_FAILED', `连接失败（HTTP ${response.status}）${detail ? `：${detail}` : '。请检查 API key 和模型名称。'}`)
+      return createError('AI_CONNECTION_FAILED', `连接失败（HTTP ${response.status}）。请检查 API key 和模型名称。`)
     }
     return success({ provider: translate(locale, `provider.${provider.id}`), model: normalized.model })
   } catch (error) {
@@ -356,13 +351,16 @@ async function requestAiJson(
   settings: AiSettings,
   prompt: AiPrompt,
 ): Promise<ExtensionResponse<unknown>> {
-  const normalized = normalizeAiSettings(settings)
+  const normalized = await resolveAiSettings(settings)
   if (!normalized.apiKey) {
     return createError('AI_NOT_CONFIGURED', '请先在插件设置中填写 API key。')
   }
+  if (!allowAiRequest()) return createError('AI_RATE_LIMITED', 'AI 请求过于频繁，请稍后再试。')
 
+  if (normalized.provider === 'custom' && !isValidCustomEndpoint(normalized.endpoint)) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
   const endpoint = providerEndpoint(normalized)
   if (!endpoint) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
+  if (!(await hasAiHostPermission(endpoint))) return createError('AI_PERMISSION_REQUIRED', '请先允许模型服务的网络权限。')
 
   try {
     return await withResponseTimeout(AI_REQUEST_TIMEOUT_MS, (signal) => fetch(endpoint, {
@@ -371,6 +369,7 @@ async function requestAiJson(
         Authorization: `Bearer ${normalized.apiKey}`,
         'Content-Type': 'application/json',
       },
+      redirect: 'error',
       body: JSON.stringify({
         model: normalized.model,
         messages: [
@@ -417,8 +416,9 @@ type AiModelList = {
 
 async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiModelList>> {
   const locale = await readLocale()
-  const normalized = normalizeAiSettings(settings)
+  const normalized = await resolveAiSettings(settings)
   const provider = providerById(normalized.provider)
+  if (provider.id === 'custom' && !isValidCustomEndpoint(normalized.endpoint)) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
   const endpoint = providerEndpoint(normalized)
   if (!endpoint) return createError('AI_INVALID_ENDPOINT', '请填写有效的 HTTPS Chat Completions endpoint。')
   const fallbackModels = normalized.model || provider.defaultModel
@@ -431,6 +431,8 @@ async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiM
   if (!normalized.apiKey) {
     return success({ ...fallback, warning: translate(locale, 'ai.providerUnavailable', { provider: translate(locale, `provider.${provider.id}`) }) })
   }
+  if (!allowAiRequest()) return createError('AI_RATE_LIMITED', 'AI 请求过于频繁，请稍后再试。')
+  if (!(await hasAiHostPermission(endpoint))) return createError('AI_PERMISSION_REQUIRED', '请先允许模型服务的网络权限。')
 
   try {
     const payload = await withTimeout(
@@ -440,11 +442,10 @@ async function listAiModels(settings: AiSettings): Promise<ExtensionResponse<AiM
     const models = normalizeModelList(provider.id, payload)
     if (!models.length) return success({ ...fallback, warning: translate(locale, 'ai.modelsEmpty') })
     return success({ models, source: 'provider' })
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : ''
+  } catch {
     return success({
       ...fallback,
-      warning: translate(locale, 'ai.modelsFetchFailed', { detail: detail ? ` (${detail})` : '' }),
+      warning: translate(locale, 'ai.modelsFetchFailed', { detail: '' }),
     })
   }
 }
@@ -459,7 +460,7 @@ async function fetchModelPayload(
     ? { 'x-goog-api-key': apiKey, Accept: 'application/json' }
     : { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
   if (providerId !== 'qwen') {
-    return readModelJson(await fetch(modelsUrl(providerId, baseUrl), { method: 'GET', headers, signal }))
+    return readModelJson(await fetch(modelsUrl(providerId, baseUrl), { method: 'GET', headers, signal, redirect: 'error' }))
   }
 
   const all: unknown[] = []
@@ -468,7 +469,7 @@ async function fetchModelPayload(
   while (page <= 20 && all.length < total) {
     const url = modelsUrl(providerId, baseUrl)
     url.searchParams.set('page_no', String(page))
-    const payload = await readModelJson(await fetch(url, { method: 'GET', headers, signal }))
+    const payload = await readModelJson(await fetch(url, { method: 'GET', headers, signal, redirect: 'error' }))
     const items = rawModelItems(providerId, payload)
     all.push(...items)
     const output = isRecord(payload) && isRecord(payload.output) ? payload.output : null
@@ -478,6 +479,23 @@ async function fetchModelPayload(
     page += 1
   }
   return { output: { models: all } }
+}
+
+async function resolveAiSettings(settings: AiSettings) {
+  const normalized = normalizeAiSettings(settings)
+  if (normalized.apiKey) return normalized
+  const stored = await readAiSettings()
+  return { ...normalized, apiKey: stored.apiKey }
+}
+
+function allowAiRequest() {
+  const now = Date.now()
+  while (aiRequestTimestamps[0] !== undefined && now - aiRequestTimestamps[0] >= AI_RATE_WINDOW_MS) {
+    aiRequestTimestamps.shift()
+  }
+  if (aiRequestTimestamps.length >= AI_RATE_LIMIT) return false
+  aiRequestTimestamps.push(now)
+  return true
 }
 
 function modelsUrl(providerId: AiSettings['provider'], baseUrl: string) {
@@ -505,34 +523,13 @@ function modelsUrl(providerId: AiSettings['provider'], baseUrl: string) {
 async function readModelJson(response: Response): Promise<unknown> {
   const text = await response.text()
   if (!response.ok) {
-    const detail = extractProviderError(text)
-    throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ''}`)
+    throw new Error(`HTTP ${response.status}`)
   }
   if (text.length > 1_000_000) throw new Error('model list response too large')
   try {
     return JSON.parse(text) as unknown
   } catch {
     throw new Error('服务商模型列表不是有效 JSON')
-  }
-}
-
-async function providerResponseDetail(response: Response) {
-  try {
-    return extractProviderError(await response.text())
-  } catch {
-    return ''
-  }
-}
-
-function extractProviderError(text: string) {
-  try {
-    const payload: unknown = JSON.parse(text)
-    if (!isRecord(payload)) return ''
-    const error = isRecord(payload.error) ? payload.error : payload
-    const message = error.message
-    return typeof message === 'string' ? message.replace(/[\r\n]+/g, ' ').slice(0, 240) : ''
-  } catch {
-    return ''
   }
 }
 
@@ -586,7 +583,7 @@ async function startAiTraining(articleId: string): Promise<ExtensionResponse<Tra
 
   const articleSnapshot = createTrainingArticleSnapshot(article)
   const session = await startTrainingSession(articleId, locale, articleSnapshot)
-  if (session.currentStep === 0 || session.currentStep >= LESSON_STEPS.length) return success(session)
+  if (session.currentStep >= LESSON_STEPS.length) return success(session)
   if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
   const prompt = buildStartPrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, session.currentStep, locale, trainingSourceBlocks(article, session))
   const completion = await requestAiJson(await readAiSettings(), prompt)
@@ -1007,11 +1004,14 @@ async function handleMessage(
       return success(null)
     }
     case 'get-ai-settings':
-      return success(await readAiSettings())
+      return success(await readAiSettingsView())
     case 'save-ai-settings': {
       const settings = normalizeAiSettings(message.settings)
-      await writeAiSettings(settings)
-      return success(settings)
+      await writeAiSettings(settings, {
+        preserveApiKey: message.preserveApiKey,
+        clearApiKey: message.clearApiKey,
+      })
+      return success(await readAiSettingsView())
     }
     case 'list-ai-models':
       return listAiModels(message.settings)
@@ -1057,401 +1057,6 @@ async function openPrintPage(): Promise<ExtensionResponse<{ tabId: number | unde
   }
 }
 
-function extractArticleFromPage(): PageExtraction {
-  const minSelectedTextLength = 40
-  const minArticleTextLength = 120
-  const maxArticleTextLength = 36_000
-  const structured = readStructuredData()
-  const normalize = (value: string) =>
-    value
-      .replace(/\u00a0/g, ' ')
-      .replace(/\r\n?/g, '\n')
-      .split(/\n\s*\n/)
-      .map((paragraph) => paragraph.split('\n').map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean).join('\n').trim())
-      .filter(Boolean)
-      .join('\n\n')
-      .slice(0, maxArticleTextLength)
-
-  const metaContent = (selector: string) => document.querySelector(selector)?.getAttribute('content')?.trim() ?? ''
-  const title = document.title.trim() || metaContent('meta[property="og:title"]') || structured.title || '未命名文章'
-  const url = window.location.href
-  const author = metaContent('meta[name="author"], meta[property="article:author"]') || structured.author
-  const selectedText = normalize(window.getSelection()?.toString() ?? '')
-
-  if (selectedText.length >= minSelectedTextLength) {
-    const blocks = limitBlocks(textToBlocks(selectedText))
-    return {
-      title,
-      url,
-      ...(author ? { author } : {}),
-      text: blocksToText(blocks),
-      blocks,
-      selectedText,
-    }
-  }
-
-  const selectors: Array<[string, number]> = [
-    ['#rm_txt_zw', 14_000],
-    ['[itemprop="articleBody"]', 12_000],
-    ['article', 10_000],
-    ['.article-content, .article-body, .post-content, .entry-content, .article__content, .story-body', 7_000],
-    ['main, [role="main"]', 5_000],
-    ['#article, #content, #main-content, .content', 3_000],
-    ['body', 0],
-  ]
-  const candidates = new Map<HTMLElement, number>()
-  for (const [selector, weight] of selectors) {
-    document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
-      candidates.set(element, Math.max(weight, candidates.get(element) ?? 0))
-    })
-  }
-  document.querySelectorAll<HTMLElement>('div, section').forEach((element) => {
-    const longParagraphCount = Array.from(element.querySelectorAll('p'))
-      .filter((paragraph) => normalize(paragraph.innerText).length >= 40)
-      .length
-    if (longParagraphCount >= 2) candidates.set(element, Math.max(900, candidates.get(element) ?? 0))
-  })
-
-  let bestText = ''
-  let bestBlocks: ArticleBlock[] = []
-  let bestScore = Number.NEGATIVE_INFINITY
-  for (const [candidate, weight] of candidates) {
-    const clone = cleanClone(candidate)
-    const blocks = extractBlocks(clone)
-    const text = blocksToText(blocks) || normalize(clone.innerText)
-    if (!text) continue
-    const paragraphs = Array.from(clone.querySelectorAll('p'))
-    const paragraphTextLength = paragraphs.reduce((total, paragraph) => total + normalize(paragraph.innerText).length, 0)
-    const paragraphCount = paragraphs.filter((paragraph) => normalize(paragraph.innerText).length >= 40).length
-    const sentenceCount = (text.match(/[。！？.!?]/g) ?? []).length
-    const linkTextLength = Array.from(clone.querySelectorAll('a'))
-      .reduce((total, link) => total + normalize(link.textContent ?? '').length, 0)
-    const linkPenalty = Math.min(text.length, linkTextLength) * 1.4
-    const nonParagraphTextLength = paragraphTextLength > 0 ? Math.max(0, text.length - paragraphTextLength) : 0
-    const nonParagraphPenalty = nonParagraphTextLength * 1.2
-    const paragraphDensity = paragraphTextLength / Math.max(text.length, 1)
-    const score = weight + Math.min(paragraphTextLength || text.length, 24_000) + paragraphCount * 160 + sentenceCount * 8
-      + paragraphDensity * 1_500 - linkPenalty - nonParagraphPenalty
-    if (score > bestScore) {
-      bestScore = score
-      bestText = text
-      bestBlocks = blocks
-    }
-  }
-
-  const structuredText = normalize(structured.articleBody)
-  const useStructuredText = structuredText.length >= minArticleTextLength && structuredText.length > bestText.length
-  const text = useStructuredText ? structuredText : bestText
-  const blocks = limitBlocks(useStructuredText
-    ? preserveVisuals(textToBlocks(structuredText), bestBlocks)
-    : bestBlocks)
-  const normalizedText = blocksToText(blocks) || text.slice(0, maxArticleTextLength)
-
-  if (normalizedText.length < minArticleTextLength) {
-    return {
-      title,
-      url,
-      ...(author ? { author } : {}),
-      text: normalizedText,
-      blocks,
-      error: {
-        code: 'ARTICLE_TOO_SHORT',
-        message: '没有识别到足够长的正文，请先选择正文后重试，或在训练页手动粘贴文章。',
-      },
-    }
-  }
-
-  return {
-    title,
-    url,
-    ...(author ? { author } : {}),
-    text: normalizedText,
-    blocks,
-  }
-
-  function textToBlocks(value: string): ArticleBlock[] {
-    return value
-      .replace(/\r\n?/g, '\n')
-      .split(/\n\s*\n/)
-      .map((text) => text.split('\n').map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean).join('\n').trim())
-      .filter(Boolean)
-      .map((text) => ({ type: 'paragraph', text }))
-  }
-
-  function blocksToText(blocks: ArticleBlock[]) {
-    return blocks.flatMap((block) => {
-      if (block.type === 'list') return [block.items.join('\n')]
-      if (block.type === 'image') return block.alt ? [block.alt] : []
-      if (block.type === 'chart') return [block.text]
-      if (block.type === 'divider') return []
-      return [block.text]
-    }).join('\n\n').trim().slice(0, maxArticleTextLength)
-  }
-
-  function limitBlocks(blocks: ArticleBlock[]): ArticleBlock[] {
-    let remaining = maxArticleTextLength
-    const limited: ArticleBlock[] = []
-    for (const block of blocks) {
-      if (remaining <= 0) break
-      if (block.type === 'image' || block.type === 'chart' || block.type === 'divider') {
-        limited.push(block)
-        continue
-      }
-      if (block.type === 'list') {
-        const items: string[] = []
-        for (const item of block.items) {
-          if (remaining <= 0) break
-          const value = item.slice(0, remaining)
-          if (value) {
-            items.push(value)
-            remaining -= value.length
-          }
-        }
-        if (items.length) limited.push({ ...block, items })
-        continue
-      }
-      const text = block.text.slice(0, remaining)
-      if (!text) break
-      limited.push({ ...block, text })
-      remaining -= text.length
-    }
-    return limited
-  }
-
-  function preserveVisuals(blocks: ArticleBlock[], fallbackBlocks: ArticleBlock[]) {
-    const visuals = fallbackBlocks.filter((block) => block.type === 'image' || block.type === 'chart')
-    if (!visuals.length) return blocks
-    const preserved = [...blocks]
-    for (const visual of visuals) {
-      const visualText = visual.type === 'image' ? visual.alt : visual.text
-      const captionIndex = visualText
-        ? preserved.findIndex((block) => 'text' in block && block.text.includes(visualText))
-        : -1
-      if (captionIndex >= 0) preserved.splice(captionIndex, 0, visual)
-      else preserved.push(visual)
-    }
-    return preserved
-  }
-
-  function extractBlocks(root: HTMLElement): ArticleBlock[] {
-    const blocks: ArticleBlock[] = []
-    const addText = (type: 'paragraph' | 'heading' | 'quote', value: string, level?: number) => {
-      const text = value.replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').split(/\n+/).map((line) => line.trim()).filter(Boolean).join(type === 'quote' ? '\n' : ' ').trim()
-      if (!text) return
-      if (type === 'heading') blocks.push({ type, level: level ?? 2, text })
-      else blocks.push({ type, text })
-    }
-    const addInlineText = (type: 'paragraph' | 'heading' | 'quote', element: Element, level?: number) => {
-      const inlines = readInlineSegments(element, type === 'quote')
-      const text = inlines.map((inline) => inline.text).join('').trim()
-      if (!text) return
-      if (type === 'heading') blocks.push({ type, level: level ?? 2, text, inlines })
-      else blocks.push({ type, text, inlines })
-    }
-    const addChart = (chart: Element, figure?: Element) => {
-      const descriptions = [
-        chart.getAttribute('aria-label'),
-        chart.getAttribute('title'),
-        chart.querySelector('title')?.textContent,
-        figure?.querySelector('figcaption')?.textContent,
-        chart.tagName.toLowerCase() === 'svg' ? chart.textContent : '',
-      ]
-        .map((value) => (value ?? '').replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-        .filter((value, index, values) => values.indexOf(value) === index)
-      const text = (descriptions.join('；') || '原文提供图表，但未提供可读取的图表说明。').slice(0, 600)
-      blocks.push({ type: 'chart', text, alt: descriptions[0] ?? '原文图表' })
-    }
-    const visit = (element: Element) => {
-      const tag = element.tagName.toLowerCase()
-      if (/^h[1-6]$/.test(tag)) {
-        addInlineText('heading', element, Number(tag.slice(1)))
-        return
-      }
-      if (tag === 'p') {
-        addInlineText('paragraph', element)
-        return
-      }
-      if (tag === 'blockquote') {
-        addInlineText('quote', element)
-        return
-      }
-      if (tag === 'svg' || tag === 'canvas') {
-        addChart(element)
-        return
-      }
-      if (tag === 'pre') {
-        const text = (element.textContent ?? '').replace(/\r\n?/g, '\n').trim()
-        if (text) {
-          const code = element.querySelector('code')
-          const language = Array.from(code?.classList ?? []).find((name) => name.startsWith('language-'))?.slice(9)
-          blocks.push({ type: 'code', ...(language ? { language } : {}), text })
-        }
-        return
-      }
-      if (tag === 'ul' || tag === 'ol') {
-        const itemElements = Array.from(element.children)
-          .filter((child) => child.tagName.toLowerCase() === 'li')
-        const listItems = itemElements.map((item) => {
-            const clone = item.cloneNode(true) as HTMLElement
-            clone.querySelectorAll('ul, ol').forEach((nested) => nested.remove())
-            return {
-              text: (clone.textContent ?? '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim(),
-              inlines: readInlineSegments(clone, false),
-            }
-          })
-        const items = listItems.filter((item) => item.text)
-        const itemInlines = items.map((item) => item.inlines)
-        if (items.length) blocks.push({ type: 'list', ordered: tag === 'ol', items: items.map((item) => item.text), itemInlines })
-        return
-      }
-      if (tag === 'figure') {
-        const chart = element.querySelector('svg, canvas')
-        if (chart) {
-          addChart(chart, element)
-          return
-        }
-        const image = element.querySelector('img')
-        if (image) visit(image)
-        const caption = element.querySelector('figcaption')
-        if (caption) addText('paragraph', caption.textContent ?? '')
-        return
-      }
-      if (tag === 'img') {
-        const rawSrc = (element as HTMLImageElement).currentSrc || (element as HTMLImageElement).src
-        try {
-          const url = new URL(rawSrc, window.location.href)
-          if (isAllowedImageSource(url)) {
-            blocks.push({ type: 'image', src: url.href, alt: (element.getAttribute('alt') ?? '').trim() })
-          }
-        } catch {
-          return
-        }
-        return
-      }
-      if (tag === 'hr') {
-        blocks.push({ type: 'divider' })
-        return
-      }
-      const children = Array.from(element.children)
-      const hasBlockChildren = children.some((child) => /^(article|blockquote|div|figure|h[1-6]|li|main|ol|p|pre|section|ul|hr)$/i.test(child.tagName))
-      if (!children.length || !hasBlockChildren) {
-        addInlineText('paragraph', element)
-        return
-      }
-      children.forEach(visit)
-    }
-    visit(root)
-    return blocks
-
-    function readInlineSegments(element: Element, preserveNewlines: boolean): ArticleInline[] {
-      const segments: ArticleInline[] = []
-      const visitNode = (node: Node, emphasis?: ArticleInline['emphasis']) => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          const text = (node.textContent ?? '')
-            .replace(/\u00a0/g, ' ')
-            .replace(preserveNewlines ? /[ \t]+/g : /\s+/g, ' ')
-          if (!text) return
-          const previous = segments.at(-1)
-          if (previous && previous.emphasis === emphasis) previous.text += text
-          else segments.push({ text, ...(emphasis ? { emphasis } : {}) })
-          return
-        }
-        if (node.nodeType !== Node.ELEMENT_NODE) return
-        const child = node as Element
-        const tag = child.tagName.toLowerCase()
-        if (tag === 'br') {
-          const previous = segments.at(-1)
-          if (previous && previous.emphasis === emphasis) previous.text += '\n'
-          else segments.push({ text: '\n', ...(emphasis ? { emphasis } : {}) })
-          return
-        }
-        const isStrong = tag === 'strong' || tag === 'b'
-        const isEmphasis = tag === 'em' || tag === 'i'
-        const nextEmphasis = isStrong && isEmphasis
-          ? 'strong-emphasis'
-          : isStrong
-            ? emphasis === 'emphasis' ? 'strong-emphasis' : 'strong'
-            : isEmphasis
-              ? emphasis === 'strong' ? 'strong-emphasis' : 'emphasis'
-              : emphasis
-        child.childNodes.forEach((childNode) => visitNode(childNode, nextEmphasis))
-      }
-      element.childNodes.forEach((child) => visitNode(child))
-      const normalized = segments
-        .map((segment) => ({ ...segment, text: segment.text.replace(preserveNewlines ? /[ \t]+/g : /\s+/g, ' ') }))
-        .filter((segment) => segment.text)
-      const joined = normalized.map((segment) => segment.text).join('').trim()
-      if (!joined) return []
-      let remaining = joined
-      return normalized.flatMap((segment) => {
-        const text = segment.text.slice(Math.max(0, segment.text.length - remaining.length))
-        remaining = remaining.slice(text.length)
-        return text ? [{ ...segment, text }] : []
-      })
-    }
-
-    function isAllowedImageSource(url: URL) {
-      return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password
-    }
-  }
-
-  function cleanClone(element: HTMLElement) {
-    const clone = element.cloneNode(true) as HTMLElement
-    clone.querySelectorAll([
-      'script', 'style', 'noscript', 'nav', 'aside', 'footer', 'form', 'header', 'button',
-      'iframe', 'video', 'audio', '[aria-hidden="true"]', '[role="navigation"]',
-      '[role="complementary"]', '[role="contentinfo"]',
-      '[id*="nav" i]', '[class*="nav" i]', '[id*="header" i]', '[class*="header" i]',
-      '[id*="footer" i]', '[class*="footer" i]', '[id*="breadcrumb" i]', '[class*="breadcrumb" i]',
-      '.ad', '.ads', '.advertisement', '.advert', '.sidebar', '.comments', '.comment',
-      '.related', '.share', '.social', '.newsletter', '.cookie', 'ins',
-      '[data-testid*="ad" i]', '[aria-label*="advertisement" i]', '[class*="audio" i]', '[class*="listen" i]',
-    ].join(',')).forEach((element) => element.remove())
-    clone.querySelectorAll<HTMLElement>('div, section').forEach((element) => {
-      if (element === clone) return
-      const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim()
-      const isAdvertisement = /^advertisement$/i.test(text)
-      const isAudioPlayer = text.length < 320 && /narrated by/i.test(text) && /\d{1,2}:\d{2}/.test(text)
-      if (isAdvertisement || isAudioPlayer) element.remove()
-    })
-    return clone
-  }
-
-  function readStructuredData() {
-    let result = { title: '', author: '', articleBody: '' }
-    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
-      try {
-        const parsed: unknown = JSON.parse(script.textContent ?? '')
-        const entries = Array.isArray(parsed) ? parsed : [parsed]
-        for (const entry of entries) {
-          if (!isObject(entry)) continue
-          const graph = Array.isArray(entry['@graph']) ? entry['@graph'] : [entry]
-          for (const item of graph) {
-            if (!isObject(item)) continue
-            const articleBody = typeof item.articleBody === 'string' ? item.articleBody : ''
-            const headline = typeof item.headline === 'string' ? item.headline : ''
-            const rawAuthor = item.author
-            const structuredAuthor = typeof rawAuthor === 'string'
-              ? rawAuthor
-              : isObject(rawAuthor) && typeof rawAuthor.name === 'string' ? rawAuthor.name : ''
-            if (articleBody.length > result.articleBody.length) result = { ...result, articleBody }
-            if (!result.title && headline) result = { ...result, title: headline }
-            if (!result.author && structuredAuthor) result = { ...result, author: structuredAuthor }
-          }
-        }
-      } catch {
-        continue
-      }
-    }
-    return result
-  }
-
-  function isObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null
-  }
-}
-
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'capture-and-open') {
     void captureAndOpen('shortcut').catch(() => undefined)
@@ -1462,10 +1067,28 @@ chrome.runtime.onInstalled.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
 })
 
-chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+  if (!isTrustedExtensionSender(sender) || !isExtensionMessage(message)) {
+    void readLocale().then((locale) => sendResponse(localizeResponse(createError('INVALID_REQUEST', '无法识别插件请求。'), locale)))
+    return true
+  }
   void handleMessage(message)
     .then(async (response) => sendResponse(localizeResponse(response, await readLocale())))
-    .catch(async () => sendResponse(localizeResponse(createError('INVALID_REQUEST', '插件请求处理失败。'), await readLocale())))
+    .catch(async (error) => sendResponse(localizeResponse(createError(
+      isStorageQuotaError(error) ? 'STORAGE_QUOTA' : 'INVALID_REQUEST',
+      '插件请求处理失败。',
+    ), await readLocale())))
   return true
 })
+
+function isTrustedExtensionSender(sender: chrome.runtime.MessageSender) {
+  const extensionId = chrome.runtime.id
+  const extensionUrl = typeof chrome.runtime.getURL === 'function' ? chrome.runtime.getURL('') : ''
+  return Boolean(extensionId && sender.id === extensionId && (!extensionUrl || !sender.url || sender.url.startsWith(extensionUrl)))
+}
+
+function isStorageQuotaError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  return message.includes('quota') || message.includes('storage') && message.includes('size')
+}
 

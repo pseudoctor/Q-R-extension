@@ -72,7 +72,7 @@ export function normalizeAiSettings(value: unknown): AiSettings {
   return { provider, model: model || config.defaultModel, apiKey, endpoint }
 }
 
-export function providerEndpoint(settings: AiSettings) {
+export function providerEndpoint(settings: Pick<AiSettings, 'provider' | 'endpoint'>) {
   const provider = providerById(settings.provider)
   return provider.id === 'custom'
     ? settings.endpoint.trim()
@@ -85,6 +85,8 @@ export function isValidCustomEndpoint(endpoint: string) {
     return isAllowedEndpointProtocol(url) &&
       !url.username &&
       !url.password &&
+      !url.search &&
+      !url.hash &&
       /\/chat\/completions\/?$/i.test(url.pathname)
   } catch {
     return false
@@ -92,10 +94,33 @@ export function isValidCustomEndpoint(endpoint: string) {
 }
 
 function isAllowedEndpointProtocol(url: URL) {
-  return url.protocol === 'https:' || (
-    url.protocol === 'http:' &&
-    ['localhost', '127.0.0.1'].includes(url.hostname)
-  )
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
+  if (url.protocol === 'http:') return ['localhost', '127.0.0.1'].includes(hostname) && !isDangerousPort(url.port)
+  if (url.protocol !== 'https:') return false
+  if (isIpLiteral(hostname) || isLocalHostname(hostname) || isDnsAlias(hostname) || isDangerousPort(url.port)) return false
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(hostname)
+}
+
+function isIpLiteral(hostname: string) {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')
+}
+
+function isLocalHostname(hostname: string) {
+  return hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.lan') ||
+    hostname === 'metadata.google.internal' ||
+    hostname === 'instance-data.ec2.internal'
+}
+
+function isDnsAlias(hostname: string) {
+  return ['.nip.io', '.sslip.io', '.xip.io', '.localtest.me', '.lvh.me', '.vcap.me'].some((suffix) => hostname.endsWith(suffix))
+}
+
+function isDangerousPort(port: string) {
+  return new Set(['22', '23', '25', '53', '110', '143', '445', '2375', '3306', '5432', '6379', '9200', '11211', '27017']).has(port)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,11 +1,19 @@
 import type { ArticleBlock, ArticleInline, CaptureRecord, TrainingArticleSnapshot } from '../types'
 import { initialMetadataReview } from '../training/evidence.ts'
 
+const MAX_ARTICLE_TEXT_LENGTH = 36_000
+const MAX_ARTICLE_LIST_ITEMS = 256
+const MAX_ARTICLE_LIST_ITEM_LENGTH = 4_000
+const MAX_ARTICLE_INLINE_ITEMS = 256
+const MAX_ARTICLE_INLINE_TEXT_LENGTH = 36_000
+const MAX_ARTICLE_IMAGE_SOURCE_LENGTH = 4_000
+const MAX_ARTICLE_ALT_LENGTH = 1_000
+
 export function articleBlocksFromText(value: string): ArticleBlock[] {
   return value
     .replace(/\r\n?/g, '\n')
     .split(/\n\s*\n/)
-    .map((text) => text.split('\n').map((line) => line.trim()).filter(Boolean).join('\n').trim())
+    .map((text) => text.split('\n').map((line) => line.trim()).filter(Boolean).join('\n').trim().slice(0, MAX_ARTICLE_TEXT_LENGTH))
     .filter(Boolean)
     .map((text) => ({ type: 'paragraph', text }))
 }
@@ -13,12 +21,12 @@ export function articleBlocksFromText(value: string): ArticleBlock[] {
 export function normalizeArticleBlocks(value: unknown, fallbackText = ''): ArticleBlock[] {
   if (!Array.isArray(value)) return articleBlocksFromText(fallbackText)
 
-  const blocks = value.flatMap((item): ArticleBlock[] => {
+  const blocks = value.slice(0, 256).flatMap((item): ArticleBlock[] => {
     if (!isRecord(item) || typeof item.type !== 'string') return []
     const id = normalizeBlockId(item.id)
     if (item.type === 'paragraph' || item.type === 'heading' || item.type === 'quote' || item.type === 'code') {
       if (typeof item.text !== 'string' || !item.text.trim()) return []
-      const text = item.type === 'code' ? item.text.replace(/\r\n?/g, '\n') : item.text.trim()
+      const text = (item.type === 'code' ? item.text.replace(/\r\n?/g, '\n') : item.text.trim()).slice(0, MAX_ARTICLE_TEXT_LENGTH)
       if (item.type === 'heading') {
         const level = typeof item.level === 'number' && Number.isInteger(item.level)
           ? Math.min(6, Math.max(1, item.level))
@@ -41,20 +49,24 @@ export function normalizeArticleBlocks(value: unknown, fallbackText = ''): Artic
     }
     if (item.type === 'list') {
       if (!Array.isArray(item.items)) return []
-      const items = item.items.filter((text): text is string => typeof text === 'string' && Boolean(text.trim())).map((text) => text.trim())
+      const items = item.items
+        .slice(0, MAX_ARTICLE_LIST_ITEMS)
+        .filter((text): text is string => typeof text === 'string' && Boolean(text.trim()))
+        .map((text) => text.trim().slice(0, MAX_ARTICLE_LIST_ITEM_LENGTH))
+        .filter(Boolean)
       if (!items.length) return []
       const itemInlines = normalizeArticleItemInlines(item.itemInlines, items)
       return [{ type: 'list', ordered: item.ordered === true, items, ...(itemInlines ? { itemInlines } : {}), ...id }]
     }
     if (item.type === 'image') {
-      const src = typeof item.src === 'string' ? item.src.trim() : ''
+      const src = typeof item.src === 'string' ? item.src.trim().slice(0, MAX_ARTICLE_IMAGE_SOURCE_LENGTH) : ''
       if (!isAllowedArticleImageSource(src)) return []
-      return [{ type: 'image', src, alt: typeof item.alt === 'string' ? item.alt.trim() : '', ...id }]
+      return [{ type: 'image', src, alt: typeof item.alt === 'string' ? item.alt.trim().slice(0, MAX_ARTICLE_ALT_LENGTH) : '', ...id }]
     }
     if (item.type === 'chart') {
-      const text = typeof item.text === 'string' ? item.text.trim() : ''
+      const text = typeof item.text === 'string' ? item.text.trim().slice(0, MAX_ARTICLE_TEXT_LENGTH) : ''
       if (!text) return []
-      return [{ type: 'chart', text, alt: typeof item.alt === 'string' ? item.alt.trim() : '', ...id }]
+      return [{ type: 'chart', text, alt: typeof item.alt === 'string' ? item.alt.trim().slice(0, MAX_ARTICLE_ALT_LENGTH) : '', ...id }]
     }
     if (item.type === 'divider') return [{ type: 'divider', ...id }]
     return []
@@ -144,11 +156,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeArticleInlines(value: unknown, expectedText: string): ArticleInline[] | undefined {
   if (!Array.isArray(value)) return undefined
-  const inlines = value.flatMap((item): ArticleInline[] => {
+  const inlines = value.slice(0, MAX_ARTICLE_INLINE_ITEMS).flatMap((item): ArticleInline[] => {
     if (!isRecord(item) || typeof item.text !== 'string' || !item.text) return []
     const emphasis = item.emphasis
     if (emphasis !== undefined && emphasis !== 'strong' && emphasis !== 'emphasis' && emphasis !== 'strong-emphasis') return []
-    return [{ text: item.text, ...(emphasis ? { emphasis } : {}) }]
+    return [{ text: item.text.slice(0, MAX_ARTICLE_INLINE_TEXT_LENGTH), ...(emphasis ? { emphasis } : {}) }]
   })
   return inlines.length && articleInlineText(inlines, '') === expectedText ? inlines : undefined
 }

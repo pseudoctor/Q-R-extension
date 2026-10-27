@@ -3,15 +3,12 @@ import { trainingAverageScore, trainingEditPreview, canRetryTrainingDraft, accep
 import type { TrainingTurn } from './types'
 import type {
   CaptureRecord,
-  AiSettings,
-  AiModelOption,
+  AiSettingsView,
   AiFeedback,
   AiReferenceAnswer,
   ArticleBlock,
   ArticleInline,
-  ExtensionError,
   ExtensionMessage,
-  ExtensionResponse,
   ErrorCode,
   SavedArticle,
   TrainingSession,
@@ -21,13 +18,6 @@ import type {
   TrainingStructuredDraft,
 } from './types'
 import { getArticleBlocks, numberArticleBlocks } from './articles/format'
-import {
-  AI_PROVIDERS,
-  defaultAiSettings,
-  isValidCustomEndpoint,
-  providerById,
-  providerEndpoint,
-} from './ai/providers'
 import {
   buildObsidianUrl,
   buildReadingExportModel,
@@ -39,7 +29,6 @@ import {
 import { areThreeSentenceDraftsComplete, formatThreeSentenceAnswer, getLessonSteps, isLessonAnswerFormatValid, isStructuredDraftComplete, LESSON_STEPS, STRUCTURED_ANSWER_MAX_LENGTH, structuredFieldsForStep, STRUCTURED_FIELD_DEFINITIONS, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from './training/lessons'
 import { useI18n } from './i18n/useI18n'
 import { detectLocale } from './i18n/types'
-import { translate } from './i18n/messages'
 import './App.css'
 import { effectiveTrainingTurns, trainingProgress, reviewDraftFromResults, initialImportantParagraphs } from './training/state'
 import { createBrowseRows, readBrowseRows, PARAGRAPH_ROLES } from './training/browse'
@@ -48,9 +37,9 @@ import { initialMetadataReview, emptySummaryEvidence, formatMetadataReview, read
 import { MetadataReviewForm, SummaryEvidenceForm } from './training/EvidenceForms'
 import { isTrainingDraftNavigable, isTrainingDraftValid, structuredFieldLimit, summaryPointLength, requiredFieldsForDraft } from './training/lessons'
 import { FieldAssist } from './training/FieldAssist'
-
-const extensionAvailable =
-  typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id)
+import { requestAiHostPermission } from './permissions'
+import { errorMessage, sendExtensionMessage } from './extension-messaging'
+import { SettingsPage } from './pages/SettingsPage'
 
 const LOCALE_SHORT_LABELS = {
   'zh-CN': '中',
@@ -59,25 +48,6 @@ const LOCALE_SHORT_LABELS = {
   ko: '한',
 } as const
 
-async function sendExtensionMessage<T>(
-  message: ExtensionMessage,
-): Promise<ExtensionResponse<T>> {
-  if (!extensionAvailable) {
-    return {
-      ok: false,
-      error: {
-        code: 'PAGE_NOT_ACCESSIBLE',
-        message: translate(detectLocale(), 'common.pageAccessible'),
-      },
-    }
-  }
-
-  return chrome.runtime.sendMessage(message) as Promise<ExtensionResponse<T>>
-}
-
-function errorMessage(error: ExtensionError) {
-  return `${error.message}${error.detail ? ` ${error.detail}` : ''}（${error.code}）`
-}
 
 function App() {
   const isTrainingPage = window.location.pathname.endsWith('training.html')
@@ -441,231 +411,6 @@ function SidePanel() {
   )
 }
 
-function SettingsPage() {
-  const { t, locale, localeOptions, setLocale } = useI18n()
-  const [settings, setSettings] = useState<AiSettings>(defaultAiSettings())
-  const [modelOptions, setModelOptions] = useState<AiModelOption[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [testing, setTesting] = useState(false)
-  const [modelsLoading, setModelsLoading] = useState(false)
-  const [modelSource, setModelSource] = useState<'provider' | 'fallback' | null>(null)
-  const [modelStatus, setModelStatus] = useState('')
-  const [status, setStatus] = useState('')
-  const [testMode, setTestMode] = useState(false)
-  const [testModeBusy, setTestModeBusy] = useState(false)
-
-  const provider = providerById(settings.provider)
-
-  const saveSettings = async () => {
-    if (settings.provider === 'custom' && !isValidCustomEndpoint(settings.endpoint)) {
-      setStatus(t('settings.invalidEndpoint'))
-      return
-    }
-    setBusy(true)
-    setStatus('')
-    const savedSettings = { ...settings, apiKey: settings.apiKey.trim() }
-    const response = await sendExtensionMessage<AiSettings>({
-      type: 'save-ai-settings',
-      settings: savedSettings,
-    })
-    setBusy(false)
-    setStatus(response.ok ? t('settings.saved') : errorMessage(response.error))
-    if (response.ok) void refreshModels(savedSettings)
-  }
-
-  const testConnection = async () => {
-    setTesting(true)
-    setStatus('')
-    const response = await sendExtensionMessage<{ provider: string; model: string }>({
-      type: 'test-ai-connection',
-      settings,
-    })
-    setTesting(false)
-    if (!response.ok) {
-      setStatus(errorMessage(response.error))
-      return
-    }
-    await refreshModels(settings)
-    setStatus(t('settings.connected', { provider: response.data.provider, model: response.data.model }))
-  }
-
-  const openShortcuts = async () => {
-    const response = await sendExtensionMessage<{ tabId: number | undefined }>({ type: 'open-shortcuts' })
-    if (!response.ok) setStatus(errorMessage(response.error))
-  }
-
-  const saveTestMode = async (enabled: boolean) => {
-    setTestModeBusy(true)
-    setStatus('')
-    const response = await sendExtensionMessage<boolean>({ type: 'save-test-mode', enabled })
-    setTestModeBusy(false)
-    if (!response.ok) {
-      setStatus(errorMessage(response.error))
-      return
-    }
-    setTestMode(response.data)
-    setStatus(t('settings.testModeSaved'))
-  }
-
-  const selectProvider = (providerId: AiSettings['provider']) => {
-    const nextProvider = providerById(providerId)
-    const nextSettings = { ...settings, provider: providerId, model: nextProvider.defaultModel }
-    setSettings(nextSettings)
-    setModelOptions([])
-    setModelSource(null)
-    setModelStatus('')
-    setStatus('')
-    if (nextSettings.apiKey.trim()) void refreshModels(nextSettings)
-  }
-
-  const refreshModels = useCallback(async (settingsOverride: AiSettings) => {
-    setModelsLoading(true)
-    setStatus('')
-    setModelStatus('')
-    const response = await sendExtensionMessage<{ models: AiModelOption[]; source: 'provider' | 'fallback'; warning?: string }>({
-      type: 'list-ai-models',
-      settings: settingsOverride,
-    })
-    setModelsLoading(false)
-    if (!response.ok) {
-      setModelStatus(errorMessage(response.error))
-      return
-    }
-    setModelOptions(response.data.models)
-    setModelSource(response.data.source)
-    setModelStatus(response.data.warning ?? '')
-  }, [])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void Promise.all([
-        sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }),
-        sendExtensionMessage<boolean>({ type: 'get-test-mode' }),
-      ]).then(([response, testModeResponse]) => {
-        setLoaded(true)
-        if (response.ok) {
-          setSettings(response.data)
-          if (response.data.apiKey.trim()) void refreshModels(response.data)
-        } else setStatus(errorMessage(response.error))
-        if (testModeResponse.ok) setTestMode(testModeResponse.data)
-        else setStatus(errorMessage(testModeResponse.error))
-      })
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [refreshModels])
-
-  return (
-    <main className="app-shell settings-shell">
-      <header className="settings-header">
-        <div>
-          <span className="eyebrow">{t('settings.eyebrow')}</span>
-          <h1>{t('settings.heading')}</h1>
-          <p>{t('settings.description')}</p>
-        </div>
-        <span className="local-pill">{t('common.localOnly')}</span>
-      </header>
-      {!loaded ? (
-        <div className="loading-state">{t('settings.loading')}</div>
-      ) : (
-        <>
-          <section className="settings-card">
-          <label>
-            {t('settings.language')}
-            <select value={locale} onChange={(event) => void setLocale(event.target.value as typeof locale)}>
-              {localeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-            <small>{t('settings.languageHint')}</small>
-          </label>
-          <div className="settings-shortcut-row">
-            <div>
-              <strong>{t('settings.shortcutsTitle')}</strong>
-              <small>{t('settings.shortcutsHint')}</small>
-            </div>
-            <button className="secondary-button" type="button" onClick={() => void openShortcuts()}>
-              {t('settings.openShortcuts')}
-            </button>
-          </div>
-          <div className="settings-test-mode-row">
-            <div>
-              <strong>{t('settings.testMode')}</strong>
-              <small>{t('settings.testModeHint')}</small>
-            </div>
-            <label className="settings-checkbox-control">
-              <input type="checkbox" checked={testMode} onChange={(event) => void saveTestMode(event.target.checked)} disabled={testModeBusy} />
-              <span>{testMode ? t('settings.testModeOn') : t('settings.testModeOff')}</span>
-            </label>
-          </div>
-          <label>
-            {t('settings.modelService')}
-            <select value={settings.provider} onChange={(event) => selectProvider(event.target.value as AiSettings['provider'])}>
-              {AI_PROVIDERS.map((item) => <option key={item.id} value={item.id}>{t(`provider.${item.id}`)}</option>)}
-            </select>
-          </label>
-          <label>
-            {t('settings.apiEndpoint')}
-            <input
-              value={provider.id === 'custom' ? settings.endpoint : providerEndpoint(settings)}
-              readOnly={provider.id !== 'custom'}
-              onChange={provider.id === 'custom' ? (event) => setSettings((current) => ({ ...current, endpoint: event.target.value })) : undefined}
-              placeholder={provider.id === 'custom' ? t('settings.customEndpointPlaceholder') : undefined}
-              aria-describedby="endpoint-note"
-            />
-            <small id="endpoint-note">{provider.id === 'custom' ? t('settings.customEndpointNote') : t('settings.endpointNote')}</small>
-          </label>
-          <label>
-            {t('settings.modelName')}
-            <div className="model-input-stack">
-              <select className="model-options-select" aria-label={t('settings.modelListAria')} value={modelOptions.some((model) => model.id === settings.model) ? settings.model : ''} onChange={(event) => { if (event.target.value) setSettings((current) => ({ ...current, model: event.target.value })) }}>
-                <option value="">{modelOptions.length ? t('settings.selectLoaded', { count: modelOptions.length }) : t('settings.refreshHint')}</option>
-                {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label === model.id ? model.id : `${model.label} · ${model.id}`}</option>)}
-              </select>
-              <div className="model-input-row">
-              <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={provider.defaultModel} aria-label={t('settings.manualModelAria')} />
-              <button className="secondary-button compact-button" type="button" onClick={() => void refreshModels(settings)} disabled={modelsLoading || !settings.apiKey.trim()}>{modelsLoading ? t('settings.fetchingModels') : t('settings.refreshModels')}</button>
-              </div>
-            </div>
-            <small>{modelSource === 'fallback' ? t('settings.fallbackHint') : modelOptions.length ? t('settings.loadedModels', { count: modelOptions.length }) : t('settings.modelHint')}</small>
-            {modelStatus && <small className="model-status" role="status">{modelStatus}</small>}
-          </label>
-          <label>
-            {t('settings.apiKey')}
-            <input type="password" autoComplete="off" value={settings.apiKey} onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))} placeholder={t('settings.apiKeyPlaceholder')} />
-            <small>{t('settings.apiKeyNote')}</small>
-          </label>
-          <div className="settings-actions-row">
-            <button className="secondary-button" type="button" onClick={() => void testConnection()} disabled={busy || testing || !settings.apiKey.trim()}>
-              {testing ? t('settings.testing') : t('settings.testConnection')}
-            </button>
-            <button className="primary-button" type="button" onClick={() => void saveSettings()} disabled={busy || testing}>
-              {busy ? t('settings.saving') : t('settings.save')}
-            </button>
-          </div>
-          {status && <p className="status-message" role="status">{status}</p>}
-          </section>
-          <section className="donation-card" aria-labelledby="donation-title">
-          <div>
-            <span className="section-kicker">{t('settings.supportEyebrow')}</span>
-            <h2 id="donation-title">{t('settings.supportHeading')}</h2>
-            <p>{t('settings.supportCopy')}</p>
-          </div>
-          <div className="donation-grid">
-            <figure>
-              <img src="/assets/donate-alipay.jpg" alt={t('settings.alipayAlt')} />
-              <figcaption>Alipay</figcaption>
-            </figure>
-            <figure>
-              <img src="/assets/donate-paypal.jpg" alt={t('settings.paypalAlt')} />
-              <figcaption>PayPal</figcaption>
-            </figure>
-          </div>
-          </section>
-        </>
-      )}
-    </main>
-  )
-}
-
 function TrainingPage() {
   const { t, locale } = useI18n()
   const [capture, setCapture] = useState<CaptureRecord | SavedArticle | null>(null)
@@ -1014,7 +759,7 @@ function ArticlePreview({ blocks }: { blocks: ArticleBlock[] }) {
             return <List key={index}>{block.items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`}>{renderArticleInline(item, block.itemInlines?.[itemIndex])}</li>)}</List>
           }
           if (block.type === 'code') return <pre key={index}><code>{block.text}</code></pre>
-          if (block.type === 'image') return <figure key={index}><img src={block.src} alt={block.alt} loading="lazy" referrerPolicy="no-referrer" />{block.alt && <figcaption>{block.alt}</figcaption>}</figure>
+          if (block.type === 'image') return <figure className="source-image omitted" key={index}><div role="img" aria-label={block.alt || t('training.imageOmitted')}>{block.alt || t('training.imageOmitted')}</div></figure>
           if (block.type === 'chart') return <figure className="article-chart" key={index}><div className="article-chart-visual" role="img" aria-label={block.alt || block.text}>{t('training.chartLabel')}</div><figcaption>{block.text}</figcaption></figure>
           return <hr key={index} />
         })}
@@ -1040,7 +785,7 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   const sourceBlocksJson = JSON.stringify(session?.articleSnapshot?.blocks ?? getArticleBlocks(article.text, article.blocks))
   const paragraphs = useMemo(() => numberArticleBlocks(JSON.parse(sourceBlocksJson) as ArticleBlock[]), [sourceBlocksJson])
   useEffect(() => { onSnapshot(session?.articleSnapshot) }, [onSnapshot, session?.articleSnapshot])
-  const [aiSettings, setAiSettings] = useState<AiSettings | null>(null)
+  const [aiSettings, setAiSettings] = useState<AiSettingsView | null>(null)
   const [testMode, setTestMode] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [aiLoaded, setAiLoaded] = useState(false)
@@ -1133,7 +878,7 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
           type: 'get-training-history',
           articleId,
         }),
-        sendExtensionMessage<AiSettings>({ type: 'get-ai-settings' }),
+        sendExtensionMessage<AiSettingsView>({ type: 'get-ai-settings' }),
         sendExtensionMessage<boolean>({ type: 'get-test-mode' }),
       ]).then(([sessionResponse, historyResponse, settingsResponse, testModeResponse]) => {
         setLoaded(true)
@@ -1207,23 +952,29 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     return () => { active = false }
   }, [articleId, session?.sessionId, historyView])
 
-  const aiConfigured = aiLoaded && Boolean(aiSettings?.apiKey.trim())
+  const aiConfigured = aiLoaded && Boolean(aiSettings?.apiKeyConfigured)
   const canGoBack = Boolean(session?.turns.length && !reviewing)
 
   const start = async () => {
     setBusy(true)
     setError('')
-    const response = await sendExtensionMessage<TrainingSession>({
-      type: 'start-training-session',
-      articleId,
-    })
-    if (!response.ok) {
+    try {
+      const message: ExtensionMessage = aiConfigured
+        ? { type: 'ai-start', articleId }
+        : { type: 'start-training-session', articleId }
+      if (aiConfigured && aiSettings && !(await requestAiHostPermission(aiSettings))) {
+        setError(t('error.AI_PERMISSION_REQUIRED'))
+        return
+      }
+      const response = await sendExtensionMessage<TrainingSession>(message)
+      if (!response.ok) {
+        setError(errorMessage(response.error))
+        return
+      }
+      applySession(response.data)
+    } finally {
       setBusy(false)
-      setError(errorMessage(response.error))
-      return
     }
-    applySession(response.data)
-    setBusy(false)
   }
 
   const jumpToTestStep = async (stepIndex: number) => {
@@ -2389,7 +2140,7 @@ function PrintPage() {
     return <main className="print-shell"><div className="loading-state">{t('print.loading')}</div></main>
   }
 
-  return <main className="print-shell"><iframe className="print-frame" title={t('print.title')} srcDoc={html} /></main>
+  return <main className="print-shell"><iframe className="print-frame" title={t('print.title')} sandbox="" srcDoc={html} /></main>
 }
 
 function formatDate(value: string, locale: import('./types').Locale = detectLocale()) {

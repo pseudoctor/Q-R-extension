@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'vite'
 import { articleBlocksFromText, articleBlocksToText, createTrainingArticleSnapshot, normalizeArticleBlocks, numberArticleBlocks } from '../src/articles/format.ts'
+import { articleBlocksToMarkdown } from '../src/export/markdown.ts'
 
 const server = await createServer({ root: new URL('..', import.meta.url).pathname, logLevel: 'silent' })
 const { buildGradePrompt, validateAiFeedback } = await server.ssrLoadModule('/src/ai/coach.ts')
@@ -12,6 +13,27 @@ assert.equal(blocks.length, 2)
 assert.equal(blocks[0].text, '第一段第一行。\n第一段第二行。')
 assert.equal(blocks[1].text, '第二段第一行。\n第二段第二行。')
 assert.equal(articleBlocksToText(blocks), source)
+assert.match(articleBlocksToMarkdown([{ type: 'paragraph', text: '<script>alert(1)</script> <img src="https://evil.example/x">' }]), /&lt;script&gt;alert\(1\)&lt;\/script&gt; &lt;img src="https:\/\/evil\.example\/x"&gt;/)
+assert.doesNotMatch(articleBlocksToMarkdown([{ type: 'paragraph', text: '<script>alert(1)</script>' }]), /<script|<img/i)
+const boundedArticleBlocks = normalizeArticleBlocks([{
+  type: 'paragraph',
+  text: 'x'.repeat(50_000),
+  inlines: [{ text: 'x'.repeat(50_000) }],
+}, {
+  type: 'list',
+  items: Array.from({ length: 300 }, () => 'y'.repeat(5_000)),
+}, {
+  type: 'image',
+  src: `https://images.example.com/${'z'.repeat(5_000)}`,
+  alt: 'a'.repeat(2_000),
+}])
+assert.equal(boundedArticleBlocks[0].text.length, 36_000)
+assert.equal(boundedArticleBlocks[0].inlines?.[0].text.length, 36_000)
+assert.equal(boundedArticleBlocks[1].items.length, 256)
+assert.equal(boundedArticleBlocks[1].items[0].length, 4_000)
+assert.equal(boundedArticleBlocks[2].src.length, 4_000)
+assert.equal(boundedArticleBlocks[2].alt.length, 1_000)
+assert.match(articleBlocksToMarkdown([{ type: 'code', text: '```\ninside\n```', language: 'text' }]), /^~~~text/m)
 
 assert.deepEqual(
   normalizeArticleBlocks([

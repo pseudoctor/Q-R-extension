@@ -23,10 +23,10 @@
 - 原 Web 应用：`/Users/armewang/Downloads/toulmin-reader`，保持独立，不直接改动。
 - 技术栈：Vite、React、TypeScript、Chrome/Edge MV3。
 - 扩展入口：Side Panel 用于最近捕获和启动阅读；完整训练内容在独立扩展标签页中打开。
-- 数据边界：第一阶段只使用 `chrome.storage.local`；正文不放入 URL，不发往第三方服务。
+- 数据边界：文章和训练记录使用 `chrome.storage.local`；API key 只使用 `chrome.storage.session`；正文不放入 URL，未启用 AI 时不发往第三方服务，启用后只发送到用户选择的 Provider。
 - 快捷键：通过 Manifest `commands` 声明可配置默认键，用户可在浏览器扩展快捷键设置中修改。
-- 权限分层：文章抓取使用 `http://*/*` 和 `https://*/*` 页面访问权限，AI 服务只使用用户手势申请的 `optional_host_permissions`；快捷键使用 Manifest 顶层 `commands` 配置。
-- 安全边界：仅响应用户快捷键或插件页面按钮触发的当前页捕获；不做后台抓取、不做遥测、不保存密钥。
+- 权限分层：文章抓取使用 `activeTab` 和 `scripting` 的当前页临时权限，AI 服务只使用用户手势申请的 `optional_host_permissions`；由于自定义模型服务允许用户填写任意 HTTPS endpoint，HTTPS 通配项仅用于按具体 endpoint 申请权限，不代表启动时拥有全站访问权；快捷键使用 Manifest 顶层 `commands` 配置。
+- 安全边界：仅响应用户快捷键或插件页面按钮触发的当前页捕获；不做后台抓取、不做遥测；API key 只保存在当前浏览器会话，不写入文章、URL、日志或提交记录。
 
 ## 3. 推荐架构
 
@@ -153,7 +153,7 @@ type CaptureRecord = {
 独立交付标准：用户在插件设置中选择 Provider、填写模型和 API key 后才启用 AI；训练开始时由 AI 出题，提交后由 AI 评分和追问；未配置 AI 时插件仍完整支持离线训练；AI 失败不会影响本地训练记录。
 
 - 由扩展项目维护 API URL、超时、错误码和请求版本，不把原 Web 应用的 `/api/train` 假设直接写死。
-- Provider、模型、API key 在插件设置页配置；API key 只能由用户明确提供并保存在扩展本地存储，禁止写入 URL、日志和提交记录。
+- Provider、模型、API key 在插件设置页配置；API key 只能由用户明确提供并保存在扩展会话存储，关闭浏览器后需要重新输入，禁止写入 URL、日志和提交记录。
 - 直连模型服务只使用 manifest 的 optional host permission；用户点击保存/测试时才请求对应服务域名权限。
 - 原 Worker 的 CORS allowlist 作为未来自建代理/同步的可选能力，不是插件运行前提。
 - 训练开始时调用 Provider 生成当前轮问题；提交回答后调用 Provider 生成四维评分、优缺点、原文依据和下一问题。
@@ -288,5 +288,6 @@ type CaptureRecord = {
 - 2026-10-25：浏览器手工加载尚未执行，原因是加载解压扩展会修改浏览器配置，需要用户明确确认后进行。
 - 2026-10-25：完成 Phase 2 本地文章架与导出；版本化存储、迁移、搜索、收藏、删除、Markdown/JSON 下载和打印/PDF 友好页面已实现。TypeScript、直接 oxlint、生产构建和扩展静态检查通过。
 - 2026-10-25：完成 Phase 3A 本地离线训练；复用了原项目 8 轮课程文本，但未复制 AI/Next/Cloudflare 运行时。TypeScript、直接 oxlint、生产构建和扩展静态检查通过。
-- 2026-10-25：按用户要求将 AI 配置放入插件设置；完成 Provider、模型、API key、本地存储、optional host permission 请求和连接测试。Worker 仍不是插件运行前提，原项目 CORS 提交 `7be2abb` 保留为可选代理基础。
+- 2026-10-25：按用户要求将 AI 配置放入插件设置；完成 Provider、模型、API key、会话存储、optional host permission 请求和连接测试。Worker 仍不是插件运行前提，原项目 CORS 提交 `7be2abb` 保留为可选代理基础。
 - 2026-10-25：完成 Phase 3B AI 训练闭环；训练开始直接调用 Provider 出题，提交后直接调用 Provider 评分和追问，增加超时、结构化响应校验、评分展示和失败重试。TypeScript、直接 oxlint、生产构建和扩展静态检查通过；真实 Provider 请求仍需用户在设置中提供自己的 API key 后手工验收。
+- 2026-10-27：修复审查发现的 AI 首轮与文档不一致、AI endpoint 权限门禁、消息失败状态恢复、训练历史保留上限、远程图片请求、文章抽取候选上限和模块集中问题；新增 CI、headless smoke test、权限与存储回归检查。真实 Chrome/Edge 交互和 Provider 请求仍需手工验收。

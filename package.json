@@ -18,8 +18,11 @@
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:storage-concurrency": "node scripts/check-storage-concurrency.mjs",
     "check:training-audit": "node scripts/check-training-audit.mjs",
+    "check:ai-storage": "node --experimental-strip-types scripts/check-ai-storage.mjs",
+    "check:message-security": "node --experimental-strip-types scripts/check-message-security.mjs",
     "check:ai-http": "node --experimental-strip-types scripts/check-ai-http.mjs",
-    "check:provider-settings": "node --experimental-strip-types scripts/check-provider-settings.mjs"
+    "check:provider-settings": "node --experimental-strip-types scripts/check-provider-settings.mjs",
+    "check:browser": "node scripts/check-browser-smoke.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

@@ -117,10 +117,10 @@ try {
   await test('formal advancement requires direct AI feedback and preserves active work', async () => {
     let listener
     chrome.commands = { onCommand: { addListener() {} } }
-    chrome.runtime = { onInstalled: { addListener() {} }, onMessage: { addListener(callback) { listener = callback } } }
+    chrome.runtime = { id: 'test-extension', getURL: () => 'chrome-extension://test-extension/', onInstalled: { addListener() {} }, onMessage: { addListener(callback) { listener = callback } } }
     data.locale = 'zh-CN'
     await server.ssrLoadModule('/src/background.ts')
-    const send = (message) => new Promise((resolve) => listener(message, {}, resolve))
+    const send = (message) => new Promise((resolve) => listener(message, { id: 'test-extension', url: 'chrome-extension://test-extension/training.html' }, resolve))
     const articles = await server.ssrLoadModule('/src/storage/articles.ts')
     await articles.upsertSavedArticle({ id: 'direct-ai-required', title: 'Article', text: 'First source paragraph.\n\nLast source paragraph.', url: '', source: 'manual', capturedAt: '2026-01-01', savedAt: '2026-01-01' })
     await s.startTrainingSession('direct-ai-required')

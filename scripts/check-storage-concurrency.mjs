@@ -22,7 +22,7 @@ globalThis.chrome = {
 }
 
 const server = await createServer({ root: new URL('..', import.meta.url).pathname, logLevel: 'silent' })
-const { upsertSavedArticle } = await server.ssrLoadModule('/src/storage/articles.ts')
+const { limitSavedArticlesForStorage, SAVED_ARTICLE_STORAGE_LIMITS, upsertSavedArticle } = await server.ssrLoadModule('/src/storage/articles.ts')
 const {
   TRAINING_SESSIONS_KEY,
   TRAINING_SESSIONS_V2_KEY,
@@ -45,6 +45,10 @@ const {
   saveTrainingDraft,
   setTrainingQuestion,
   startTrainingSession,
+  TRAINING_STORAGE_LIMITS,
+  isTrainingSessionWithinStorageLimit,
+  limitTrainingSessionsForStorage,
+  trimTrainingSessionForStorage,
 } = await server.ssrLoadModule('/src/storage/training.ts')
 const { writeTestMode } = await server.ssrLoadModule('/src/storage/preferences.ts')
 const { createTrainingArticleSnapshot } = await server.ssrLoadModule('/src/articles/format.ts')
@@ -298,5 +302,48 @@ assert.equal((await readTrainingSessions()).filter((session) => session.articleI
 await removeTrainingSession('legacy-article')
 assert.equal((await getTrainingSession('legacy-article')), null)
 
-console.log('PASS: V3 article/training mutations, stale-response rejection, and legacy storage coexistence remain lossless.')
+const storageLimitSession = await startTrainingSession('storage-limits')
+const bounded = trimTrainingSessionForStorage({
+  ...storageLimitSession,
+  turns: Array.from({ length: TRAINING_STORAGE_LIMITS.turns + 5 }, (_, index) => ({
+    stepIndex: index,
+    question: `q-${index}`,
+    answer: `a-${index}`,
+    submittedAt: `2026-01-${String(index + 1).padStart(2, '0')}`,
+  })),
+  answerVersions: Array.from({ length: TRAINING_STORAGE_LIMITS.answerVersions + 5 }, (_, index) => ({ id: `version-${index}`, answer: `a-${index}`, createdAt: `2026-01-${String(index + 1).padStart(2, '0')}` })),
+  reinforcements: Array.from({ length: TRAINING_STORAGE_LIMITS.reinforcements + 5 }, (_, index) => ({ id: `practice-${index}`, answer: `a-${index}`, createdAt: `2026-01-${String(index + 1).padStart(2, '0')}` })),
+  aiRequests: Array.from({ length: TRAINING_STORAGE_LIMITS.aiRequests + 5 }, (_, index) => ({ id: `request-${index}`, kind: 'grade', status: 'succeeded', createdAt: `2026-01-${String(index + 1).padStart(2, '0')}` })),
+})
+assert.equal(bounded.turns.length, TRAINING_STORAGE_LIMITS.turns)
+assert.equal(bounded.answerVersions.length, TRAINING_STORAGE_LIMITS.answerVersions)
+assert.equal(bounded.reinforcements.length, TRAINING_STORAGE_LIMITS.reinforcements)
+assert.equal(bounded.aiRequests.length, TRAINING_STORAGE_LIMITS.aiRequests)
+
+const oversizedArticles = Array.from({ length: SAVED_ARTICLE_STORAGE_LIMITS.items }, (_, index) => ({
+  ...article(`budget-${index}`),
+  title: `budget-${index}`,
+  text: '文章'.repeat(18_000),
+  isFavorite: index === SAVED_ARTICLE_STORAGE_LIMITS.items - 1,
+}))
+const boundedArticles = limitSavedArticlesForStorage(oversizedArticles)
+assert.ok(new TextEncoder().encode(JSON.stringify({ version: 2, items: boundedArticles })).byteLength <= SAVED_ARTICLE_STORAGE_LIMITS.maxBytes)
+assert.ok(boundedArticles.every((item) => new TextEncoder().encode(JSON.stringify(item)).byteLength <= SAVED_ARTICLE_STORAGE_LIMITS.maxArticleBytes))
+assert.equal(boundedArticles.some((item) => item.id === `budget-${SAVED_ARTICLE_STORAGE_LIMITS.items - 1}`), true)
+
+const activeSessions = Array.from({ length: TRAINING_STORAGE_LIMITS.activeSessions + 8 }, (_, index) => ({
+  ...storageLimitSession,
+  articleId: `active-budget-${index}`,
+  sessionId: `active-session-${index}`,
+  updatedAt: `2026-02-${String((index % 28) + 1).padStart(2, '0')}T00:00:00.000Z`,
+}))
+const boundedSessions = limitTrainingSessionsForStorage(activeSessions)
+assert.ok(boundedSessions.length <= TRAINING_STORAGE_LIMITS.activeSessions)
+assert.ok(new TextEncoder().encode(JSON.stringify({ version: 3, items: boundedSessions })).byteLength <= TRAINING_STORAGE_LIMITS.maxBytes)
+assert.equal(isTrainingSessionWithinStorageLimit({
+  ...storageLimitSession,
+  draft: 'x'.repeat(TRAINING_STORAGE_LIMITS.maxSessionBytes + 1),
+}), false)
+
+console.log('PASS: V3 article/training mutations, stale-response rejection, storage retention limits, and legacy storage coexistence remain lossless.')
 await server.close()

@@ -38,16 +38,16 @@ for (const permission of ['activeTab', 'scripting', 'sidePanel', 'storage']) {
   }
 }
 
-const hostPermissions = new Set(manifest.host_permissions ?? [])
-for (const origin of ['http://*/*', 'https://*/*']) {
-  if (!hostPermissions.has(origin)) {
-    throw new Error(`manifest 缺少文章抓取所需的页面访问权限：${origin}`)
-  }
+if (Array.isArray(manifest.host_permissions) && manifest.host_permissions.length > 0) {
+  throw new Error('manifest 不应声明全站 host_permissions；当前页抓取应使用 activeTab 临时权限。')
 }
 
 const extensionCsp = manifest.content_security_policy?.extension_pages ?? ''
-if (!extensionCsp.includes("img-src 'self' data: http: https:")) {
-  throw new Error('manifest 未明确允许扩展页加载 HTTP(S) 图片。')
+if (!extensionCsp.includes("img-src 'self' data:")) {
+  throw new Error('manifest 未限制扩展页图片来源为自身资源和 data 图片。')
+}
+if (extensionCsp.includes('img-src \'self\' data: http: https:')) {
+  throw new Error('manifest 仍允许扩展页加载任意 HTTP(S) 图片。')
 }
 
 const command = manifest.commands?.['capture-and-open']
@@ -55,8 +55,11 @@ if (!command?.suggested_key?.default || !command?.description) {
   throw new Error('manifest 缺少 capture-and-open 快捷键配置。')
 }
 
-if ((manifest.optional_host_permissions ?? []).length > 0) {
-  throw new Error('manifest 不应为 AI endpoint 声明重复的 optional host permissions。')
+const optionalHostPermissions = new Set(manifest.optional_host_permissions ?? [])
+for (const origin of ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*']) {
+  if (!optionalHostPermissions.has(origin)) {
+    throw new Error(`manifest 缺少 AI endpoint 的 optional host permission：${origin}`)
+  }
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')

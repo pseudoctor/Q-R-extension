@@ -16,6 +16,7 @@ import type {
   TrainingStructuredDraft,
   TrainingRevision,
 } from '../types'
+import { normalizeArticleBlocks } from '../articles/format'
 import { getLegacyLessonSteps, getLessonSteps, getNextLessonStepId, LESSON_STEPS, normalizeThreeSentenceDrafts, normalizeTrainingStructuredDraft, STRUCTURED_ANSWER_MAX_LENGTH, structuredFieldsForStep, THREE_SENTENCE_ANSWER_MAX_LENGTH, TRAINING_ANSWER_MAX_LENGTH } from '../training/lessons'
 import { createKeyedMutationQueue } from './mutation-queue'
 import { trainingProgress, trainingEditPreview } from '../training/state'
@@ -25,8 +26,25 @@ export const TRAINING_SESSIONS_KEY = 'trainingSessions'
 export const TRAINING_SESSIONS_V2_KEY = 'trainingSessionsV2'
 export const TRAINING_SESSIONS_V3_KEY = 'trainingSessionsV3'
 export const TRAINING_TEST_SESSIONS_V3_KEY = 'trainingTestSessionsV3'
+export const TRAINING_STORAGE_LIMITS = {
+  activeSessions: 48,
+  archivedSessions: 24,
+  maxSessionBytes: 1_000_000,
+  maxBytes: 4_000_000,
+  answerVersions: 40,
+  turns: 40,
+  reinforcements: 40,
+  aiRequests: 80,
+} as const
 const runTrainingMutation = createKeyedMutationQueue()
 const trainingMutation = <T>(mutation: () => Promise<T>) => runTrainingMutation(TRAINING_SESSIONS_V3_KEY, mutation)
+
+class TrainingStorageQuotaError extends Error {
+  constructor() {
+    super('Training storage quota exceeded')
+    this.name = 'TrainingStorageQuotaError'
+  }
+}
 
 export function normalizeTrainingSessionStore(value: unknown, locale: Locale = 'zh-CN'): TrainingSessionStore {
   const items = Array.isArray(value)
@@ -58,20 +76,22 @@ export function normalizeTrainingSessionStoreV2(value: unknown, locale: Locale =
 
 export function normalizeTrainingSessionStoreV3(value: unknown, locale: Locale = 'zh-CN'): TrainingSessionStoreV3 {
   const items = isRecord(value) && value.version === 3 && Array.isArray(value.items) ? value.items : []
+  const normalizedItems = items
+    .filter((item) => isTrainingSession(item, LESSON_STEPS.length, 'reading-10'))
+    .filter((item) => item.courseVersion === 'guided-reading-10-v1')
+    .filter((item) => isTrainingSessionWithinStorageLimit(item))
+    .map((item) => withQuestionDefault({
+      ...item,
+      flowId: 'reading-10',
+      courseVersion: 'guided-reading-10-v1',
+      sessionId: typeof item.sessionId === 'string' && item.sessionId ? item.sessionId : createTrainingId(),
+      currentStepId: typeof item.currentStepId === 'string' ? item.currentStepId : getLessonSteps(locale)[item.currentStep]?.id,
+      draftRevision: typeof item.draftRevision === 'number' && Number.isInteger(item.draftRevision) && item.draftRevision >= 0 ? item.draftRevision : 0,
+      ...(Array.isArray(item.aiRequests) ? { aiRequests: normalizeTrainingAiRequests(item.aiRequests) } : {}),
+    }, locale))
   return {
     version: 3,
-    items: items
-      .filter((item) => isTrainingSession(item, LESSON_STEPS.length, 'reading-10'))
-      .filter((item) => item.courseVersion === 'guided-reading-10-v1')
-      .map((item) => withQuestionDefault({
-        ...item,
-        flowId: 'reading-10',
-        courseVersion: 'guided-reading-10-v1',
-        sessionId: typeof item.sessionId === 'string' && item.sessionId ? item.sessionId : createTrainingId(),
-        currentStepId: typeof item.currentStepId === 'string' ? item.currentStepId : getLessonSteps(locale)[item.currentStep]?.id,
-        draftRevision: typeof item.draftRevision === 'number' && Number.isInteger(item.draftRevision) && item.draftRevision >= 0 ? item.draftRevision : 0,
-        ...(Array.isArray(item.aiRequests) ? { aiRequests: normalizeTrainingAiRequests(item.aiRequests) } : {}),
-      }, locale)),
+    items: limitTrainingSessionsForStorage(normalizedItems),
   }
 }
 
@@ -890,8 +910,95 @@ async function writeTrainingSessionsV3(items: TrainingSession[], testMode?: bool
   const useTestMode = testMode ?? await isTestModeEnabled()
   const archived = replaceAll ? [] : (await readAllTrainingSessionsV3('zh-CN', useTestMode))
     .filter((item) => item.isArchived && !items.some((candidate) => candidate.sessionId === item.sessionId))
-  const store: TrainingSessionStoreV3 = { version: 3, items: [...archived, ...items] }
-  await chrome.storage.local.set({ [useTestMode ? TRAINING_TEST_SESSIONS_V3_KEY : TRAINING_SESSIONS_V3_KEY]: store })
+  const nextItems = [...archived, ...items].map(trimTrainingSessionForStorage)
+  if (nextItems.some((item) => !isTrainingSessionWithinStorageLimit(item))) throw new TrainingStorageQuotaError()
+  const active = nextItems.filter((item) => !item.isArchived)
+  const archivedItems = nextItems
+    .filter((item) => item.isArchived)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+  const boundedItems = limitTrainingSessionsForStorage([...active, ...archivedItems])
+  const key = useTestMode ? TRAINING_TEST_SESSIONS_V3_KEY : TRAINING_SESSIONS_V3_KEY
+  const store: TrainingSessionStoreV3 = { version: 3, items: boundedItems }
+  try {
+    await chrome.storage.local.set({ [key]: store })
+  } catch (error) {
+    if (!isStorageQuotaError(error)) throw error
+    if (archivedItems.length <= 3) throw new TrainingStorageQuotaError()
+    try {
+      await chrome.storage.local.set({
+        [key]: { version: 3, items: [...active, ...archivedItems.slice(0, 3)] },
+      })
+    } catch {
+      throw new TrainingStorageQuotaError()
+    }
+  }
+}
+
+export function trimTrainingSessionForStorage(session: TrainingSession): TrainingSession {
+  const referencedVersions = new Set([
+    session.answerVersionId,
+    ...session.turns.map((turn) => turn.answerVersionId),
+  ].filter((value): value is string => Boolean(value)))
+  return {
+    ...session,
+    ...(session.articleSnapshot ? {
+      articleSnapshot: {
+        ...session.articleSnapshot,
+        text: session.articleSnapshot.text.slice(0, 36_000),
+        blocks: normalizeArticleBlocks(session.articleSnapshot.blocks, session.articleSnapshot.text).slice(0, 256),
+      },
+    } : {}),
+    turns: retainRecent(session.turns, TRAINING_STORAGE_LIMITS.turns),
+    ...(session.answerVersions ? {
+      answerVersions: retainRecent(session.answerVersions, TRAINING_STORAGE_LIMITS.answerVersions, (item) => referencedVersions.has(item.id)),
+    } : {}),
+    ...(session.reinforcements ? {
+      reinforcements: retainRecent(session.reinforcements, TRAINING_STORAGE_LIMITS.reinforcements),
+    } : {}),
+    ...(session.aiRequests ? {
+      aiRequests: retainRecent(session.aiRequests, TRAINING_STORAGE_LIMITS.aiRequests),
+    } : {}),
+  }
+}
+
+export function limitTrainingSessionsForStorage(items: TrainingSession[]) {
+  const active = items
+    .filter((item) => !item.isArchived)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, TRAINING_STORAGE_LIMITS.activeSessions)
+  const archived = items
+    .filter((item) => item.isArchived)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, TRAINING_STORAGE_LIMITS.archivedSessions)
+  const kept = [...active, ...archived]
+  while (kept.length > 1 && estimateBytes({ version: 3, items: kept }) > TRAINING_STORAGE_LIMITS.maxBytes) {
+    const archivedIndex = kept.findLastIndex((item) => item.isArchived)
+    const activeIndex = kept.findLastIndex((item) => !item.isArchived)
+    const index = archivedIndex >= 0 ? archivedIndex : activeIndex > 0 ? activeIndex : -1
+    if (index < 0) break
+    kept.splice(index, 1)
+  }
+  return kept
+}
+
+export function isTrainingSessionWithinStorageLimit(session: TrainingSession) {
+  return estimateBytes(session) <= TRAINING_STORAGE_LIMITS.maxSessionBytes
+}
+
+function retainRecent<T>(items: T[], limit: number, pinned?: (item: T) => boolean) {
+  if (items.length <= limit) return items
+  const keep = new Set(items.slice(-limit))
+  if (pinned) items.forEach((item) => { if (pinned(item)) keep.add(item) })
+  return items.filter((item) => keep.has(item))
+}
+
+function isStorageQuotaError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  return message.includes('quota') || message.includes('storage') && message.includes('size')
+}
+
+function estimateBytes(value: unknown) {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength
 }
 
 async function isTestModeEnabled() {
@@ -936,10 +1043,59 @@ function isTrainingSession(value: unknown, maxStep: number, expectedFlow: 'legac
     (value.importantParagraphs === undefined || Array.isArray(value.importantParagraphs)) &&
     (value.threeSentenceDrafts === undefined || Array.isArray(value.threeSentenceDrafts)) &&
     (value.paragraphCursor === undefined || (typeof value.paragraphCursor === 'number' && Number.isInteger(value.paragraphCursor) && value.paragraphCursor >= 0)) &&
-    Array.isArray(value.turns) &&
+    Array.isArray(value.turns) && value.turns.length <= 200 && value.turns.every(isTrainingTurnRecord) &&
+    (value.answerVersions === undefined || (Array.isArray(value.answerVersions) && value.answerVersions.length <= 200 && value.answerVersions.every(isTrainingAnswerVersionRecord))) &&
+    (value.reinforcements === undefined || (Array.isArray(value.reinforcements) && value.reinforcements.length <= 200 && value.reinforcements.every(isTrainingReinforcementRecord))) &&
+    (value.aiRequests === undefined || (Array.isArray(value.aiRequests) && value.aiRequests.length <= 200 && value.aiRequests.every(isTrainingAiRequestRecord))) &&
+    (value.stepRecords === undefined || Object.values(value.stepRecords).every(isTrainingStepRecord)) &&
     typeof value.startedAt === 'string' &&
     typeof value.updatedAt === 'string'
   )
+}
+
+function isTrainingTurnRecord(value: unknown): value is TrainingSession['turns'][number] {
+  if (!isRecord(value)) return false
+  return isNonNegativeSafeInteger(value.stepIndex) &&
+    isBoundedString(value.question, 40_000) && isBoundedString(value.answer, 40_000) &&
+    isBoundedString(value.submittedAt, 100) &&
+    (value.stepId === undefined || isBoundedString(value.stepId, 200)) &&
+    (value.answerVersionId === undefined || isBoundedString(value.answerVersionId, 200)) &&
+    (value.referenceAnswer === undefined || isRecord(value.referenceAnswer)) &&
+    (value.feedback === undefined || isRecord(value.feedback))
+}
+
+function isTrainingAnswerVersionRecord(value: unknown): value is NonNullable<TrainingSession['answerVersions']>[number] {
+  if (!isRecord(value)) return false
+  return isBoundedString(value.id, 200) && isBoundedString(value.stepId, 200) &&
+    isNonNegativeSafeInteger(value.stepIndex) &&
+    isBoundedString(value.answer, 40_000) && isBoundedString(value.createdAt, 100)
+}
+
+function isTrainingReinforcementRecord(value: unknown): value is NonNullable<TrainingSession['reinforcements']>[number] {
+  if (!isRecord(value)) return false
+  return isBoundedString(value.id, 200) && isBoundedString(value.answer, 40_000) && isBoundedString(value.createdAt, 100)
+}
+
+function isTrainingAiRequestRecord(value: unknown): value is NonNullable<TrainingSession['aiRequests']>[number] {
+  if (!isRecord(value)) return false
+  return isBoundedString(value.id, 200) && isBoundedString(value.kind, 40) &&
+    isBoundedString(value.sessionId, 200) && isBoundedString(value.stepId, 200) &&
+    isBoundedString(value.status, 40) && isBoundedString(value.createdAt, 100) && isBoundedString(value.updatedAt, 100)
+}
+
+function isTrainingStepRecord(value: unknown): value is NonNullable<TrainingSession['stepRecords']>[string] {
+  if (!isRecord(value)) return false
+  return isBoundedString(value.stepId, 200) &&
+    ['not-started', 'draft', 'frozen', 'completed', 'needs-review'].includes(String(value.status)) &&
+    isBoundedString(value.draft, 40_000)
+}
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length <= maxLength
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 function withQuestionDefault(session: TrainingSession, locale: Locale): TrainingSession {

@@ -17,7 +17,11 @@ pnpm build
 
 点击插件侧边栏右上角的设置按钮，选择服务商，填写 API endpoint、模型名称和 API key，先测试连接，再保存设置。AI 出题和评分需要先完成这一步。
 
-API key 只保存在浏览器的插件本地存储中，扩展存储不是加密保险箱，不要在共享电脑上保存高权限密钥。
+API key 只保存在当前浏览器会话的临时扩展存储中，关闭浏览器后需要重新输入；不要在共享电脑上使用高权限密钥。
+
+保存设置或测试连接时，插件会按当前服务商 endpoint 请求对应的网络权限。拒绝权限时保存会被阻止，也不会发送 AI 请求。
+
+网页抓取只使用用户点击扩展按钮或触发快捷键后获得的当前页临时权限，不申请所有网站的永久读取权限。
 
 ### 3. 获取文章
 
@@ -48,6 +52,8 @@ API key 只保存在浏览器的插件本地存储中，扩展存储不是加密
 - JSON
 - 打印页或 PDF
 
+文章中的远程图片默认只显示占位文本，不会在插件预览、打印或 Markdown 导出中自动请求第三方图片。训练历史会保留有限数量的版本和归档，避免无限增长占满浏览器存储。
+
 ## 常见问题
 
 ### 快捷键没有反应
@@ -69,8 +75,9 @@ API key 只保存在浏览器的插件本地存储中，扩展存储不是加密
 ```bash
 pnpm install
 pnpm dev
-pnpm lint
+pnpm exec oxlint .
 pnpm build
+pnpm check:browser
 ```
 
 架构决策记录在 `docs/adr/`，扩展的构建产物位于 `dist/`。
@@ -87,3 +94,4 @@ pnpm package:extension
 `pnpm package:extension` 会先构建并检查 `dist/`、版本同步和商店素材，然后生成 `release/toulmin-reader-extension-v<version>.zip`。`release/` 已加入忽略规则，压缩包不会进入源码提交。
 
 真实 Chrome/Edge 交互和真实模型验收仍需在目标浏览器及已配置的 AI 服务中手工执行；本地脚本不会把模拟结果当作真实验收证据。
+CI 会在安装 Chrome 后运行 headless browser smoke test；本机未安装或无法启动 Chrome 时，`pnpm check:browser` 会明确跳过。

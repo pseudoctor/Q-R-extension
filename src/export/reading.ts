@@ -1,6 +1,6 @@
 import type { AiReferenceAnswer, ArticleBlock, ArticleInline, CaptureRecord, Locale, SavedArticle, TrainingAiRequest, TrainingSession, TrainingFlowId, TrainingAnswerVersion } from '../types'
 import { articleBlocksToText, getArticleBlocks } from '../articles/format'
-import { articleBlocksToMarkdown } from './markdown'
+import { articleBlocksToMarkdown, escapeMarkdownBlock } from './markdown'
 import { getLegacyLessonSteps, getLessonSteps, LESSON_STEPS } from '../training/lessons'
 import { translate } from '../i18n/messages'
 import { effectiveTrainingTurns, trainingProgress } from '../training/state'
@@ -210,7 +210,7 @@ export function generateReadingMarkdown(model: ReadingExportModel) {
 
 export function generateReadingPdfHtml(model: ReadingExportModel) {
   const t = (key: string, variables?: Record<string, string | number>) => translate(model.locale, key, variables)
-  const paragraphs = articleBlocksToHtml(model.articleBlocks)
+  const paragraphs = articleBlocksToHtml(model.articleBlocks, t('training.imageOmitted'))
   let turns = model.turns.length
     ? model.turns.map((turn) => `<article class="turn"><h3>${escapeHtml(t('export.round', { number: turn.number }))} · ${escapeHtml(turn.stage)} · ${escapeHtml(turn.step)}</h3><h4>${escapeHtml(t('export.question'))}</h4>${htmlParagraphs(turn.question, t('export.notProvided'))}<h4>${escapeHtml(t('export.myAnswer'))}</h4>${htmlParagraphs(turn.answer, t('export.notProvided'))}${turn.answerVersionId ? `<p class="meta">answer_version_id: ${escapeHtml(turn.answerVersionId)}</p>` : ''}${feedbackHtml(turn.feedback, model.locale, turn.referenceAnswer)}</article>`).join('')
     : `<p>${escapeHtml(t('export.noAnswer'))}</p>`
@@ -238,7 +238,7 @@ export function buildObsidianUrl(markdown: string, options: { vault?: string; pa
   return { url: `obsidian://new?${fallback.join('&')}`, useClipboard: true }
 }
 
-function articleBlocksToHtml(blocks: ArticleBlock[]) {
+function articleBlocksToHtml(blocks: ArticleBlock[], imageLabel: string) {
   let sourceNumber = 0
   const number = () => String(++sourceNumber).padStart(2, '0')
   return blocks.map((block) => {
@@ -250,7 +250,7 @@ function articleBlocksToHtml(blocks: ArticleBlock[]) {
       return `<${tag} class="source-list">${block.items.map((item, index) => `<li>${inlineHtml(item, block.itemInlines?.[index])}</li>`).join('')}</${tag}>`
     }
     if (block.type === 'code') return `<pre class="source-code"><code>${escapeHtml(block.text)}</code></pre>`
-    if (block.type === 'image') return `<figure class="source-image"><img src="${escapeHtml(block.src)}" alt="${escapeHtml(block.alt)}" />${block.alt ? `<figcaption>${escapeHtml(block.alt)}</figcaption>` : ''}</figure>`
+    if (block.type === 'image') return `<figure class="source-image omitted"><p>${escapeHtml(imageLabel)}${block.alt ? `: ${escapeHtml(block.alt)}` : ''}</p></figure>`
     if (block.type === 'chart') return `<figure class="source-chart"><figcaption>${escapeHtml(block.alt || '图表')}</figcaption><p>${escapeHtml(block.text)}</p></figure>`
     return '<hr />'
   }).join('')
@@ -345,10 +345,6 @@ function feedbackHtml(feedback: NonNullable<TrainingSession['turns'][number]['fe
 
 function splitArticle(article: string) {
   return article.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)
-}
-
-function escapeMarkdownBlock(value: string) {
-  return value.trim().replace(/^([#>*+\-`])/gm, '\\$1')
 }
 
 function blockquote(value: string) {
