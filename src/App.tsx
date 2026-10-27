@@ -1991,21 +1991,30 @@ function BrowseTrainingForm({ blocks, draft, disabled, onChange, previewQuestion
 }) {
   const { t } = useI18n()
   const rows = draft['quickBrowse.paragraphMap'] === undefined ? createBrowseRows(blocks) : readBrowseRows(draft['quickBrowse.paragraphMap'])
+  const candidateCount = rows.filter((row) => row.important).length
   const updateRow = (index: number, change: Partial<(typeof rows)[number]>) => onChange('quickBrowse.paragraphMap', JSON.stringify(rows.map((row, i) => i === index ? { ...row, ...change } : row)))
   return <div className="structured-training-form">
-    {previewQuestion && <p>{t('coach.field.expectedQuestion')}: {previewQuestion}</p>}
-    <label className="structured-field"><span>{t('coach.field.structure')}</span><textarea value={draft['quickBrowse.structure'] ?? ''} maxLength={800} disabled={disabled} onChange={(event) => onChange('quickBrowse.structure', event.target.value)} /></label>
-    <p>{t('coach.browse.hint')}</p>
-    {rows.map((row, index) => <details key={row.sourceId}>
+    {previewQuestion && <p className="browse-preview-question">{t('coach.field.expectedQuestion')}: {previewQuestion}</p>}
+    <label className="structured-field"><span>{t('coach.field.structureOverview')}</span><textarea value={draft['quickBrowse.structure'] ?? ''} maxLength={800} disabled={disabled} onChange={(event) => onChange('quickBrowse.structure', event.target.value)} /></label>
+    <p className="browse-training-hint">{t('coach.browse.hint')}</p>
+    <section className="browse-paragraph-section" aria-labelledby="browse-paragraph-heading">
+      <div className="browse-paragraph-heading">
+        <strong id="browse-paragraph-heading">{t('coach.browse.paragraphHeading')}</strong>
+        <span>{t('coach.browse.stats', { count: rows.length, candidates: candidateCount })}</span>
+      </div>
+      <div className="browse-paragraph-list">
+      {rows.map((row, index) => <details className="browse-paragraph-card" key={row.sourceId}>
       <summary>{t('feedback.paragraph', { number: row.paragraph })} {row.role ? t(`coach.browse.role.${row.role}`) : '—'}{row.important ? ' ★' : ''}</summary>
       <fieldset disabled={disabled}>
-      <legend>{t('feedback.paragraph', { number: row.paragraph })}</legend>
+      <legend className="browse-paragraph-legend">{t('feedback.paragraph', { number: row.paragraph })}</legend>
       <details><summary>{t('export.sourceText')}</summary><p>{numberArticleBlocks(blocks).find((item) => item.paragraph === row.paragraph)?.text}</p></details>
       <label className="structured-field"><span>{t('coach.field.paragraphLabels')}</span><select value={row.role} onChange={(event) => updateRow(index, { role: event.target.value })}><option value="">—</option>{PARAGRAPH_ROLES.map((role) => <option value={role} key={role}>{t(`coach.browse.role.${role}`)}</option>)}</select></label>
       <label className="structured-field"><span>{t('coach.browse.first')}</span><textarea value={row.first} onChange={(event) => updateRow(index, { first: event.target.value })} /></label>
       <label className="structured-field"><span>{t('coach.browse.last')}</span><textarea value={row.last} onChange={(event) => updateRow(index, { last: event.target.value })} /></label>
       <label><input type="checkbox" checked={row.important} onChange={(event) => updateRow(index, { important: event.target.checked })} />{t('coach.browse.candidate')}</label>
     </fieldset></details>)}
+      </div>
+    </section>
   </div>
 }
 

@@ -12,6 +12,7 @@ const {
   isStructuredDraftComplete,
   isLessonAnswerFormatValid,
   normalizeTrainingStructuredDraft,
+  STRUCTURED_FIELD_DEFINITIONS,
   structuredFieldsForStep,
 } = await server.ssrLoadModule('/src/training/lessons.ts')
 const {
@@ -59,7 +60,12 @@ assert.equal(getLessonSteps('zh-CN')[0].name, '预读')
 assert.equal(getLessonSteps('zh-CN')[0].focus, '观察而不是评价')
 assert.equal(getLessonSteps('zh-CN')[0].question, '文章的外部线索透露了哪些信息？你预计它要回答什么问题？')
 assert.equal(getLessonSteps('zh-CN')[0].instruction, '先看文章外围信息和首尾段，只记录观察，不要急着评价。')
-assert.equal(getLessonSteps('zh-CN')[1].question, '文章如何展开？请为每段标记功能，并选出下一步要重点阅读的段落。')
+assert.equal(getLessonSteps('zh-CN')[0].hint, '先核对标题、副标题、作者、来源和日期的状态。提取未获得不等于原文未提供；再记录首末段和小标题、图表、强调信息显示了什么，最后提出预计问题。')
+assert.equal(getLessonSteps('zh-CN')[1].instruction, '快速浏览全文，先看清文章如何分段、转折和收束。')
+assert.equal(getLessonSteps('zh-CN')[1].question, '请为每段标记功能，并选出下一步要重点阅读的段落。')
+assert.equal(getLessonSteps('zh-CN')[1].hint, '只建立文章结构地图；核对首末句和转折，发现系统识别不准确时再修改。第3步再用三句法分析候选段落。')
+assert.equal(STRUCTURED_FIELD_DEFINITIONS.preview.find((field) => field.id === 'preview.structure')?.labelKey, 'coach.field.externalClues')
+assert.equal(STRUCTURED_FIELD_DEFINITIONS['quick-browse'].find((field) => field.id === 'quickBrowse.structure')?.labelKey, 'coach.field.structureOverview')
 assert.deepEqual(structuredFieldsForStep('quick-browse'), ['quickBrowse.paragraphMap', 'quickBrowse.structure'])
 assert.equal(normalizeTrainingStructuredDraft({ 'quickBrowse.paragraphLabels': 'legacy labels' })?.['quickBrowse.paragraphLabels'], 'legacy labels')
 assert.equal(normalizeTrainingStructuredDraft({ 'quickBrowse.representativeSentences': 'legacy sentences' })?.['quickBrowse.representativeSentences'], 'legacy sentences')

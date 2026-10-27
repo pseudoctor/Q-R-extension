@@ -1509,6 +1509,90 @@
   gap: 12px;
 }
 
+.browse-preview-question {
+  margin: 0;
+  border-left: 3px solid var(--accent);
+  padding: 9px 11px;
+  color: var(--ink);
+  background: var(--accent-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.browse-training-hint {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.browse-paragraph-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 14px;
+}
+
+.browse-paragraph-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+}
+
+.browse-paragraph-heading strong {
+  font-size: 14px;
+}
+
+.browse-paragraph-heading span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.browse-paragraph-list {
+  display: grid;
+  gap: 8px;
+}
+
+.browse-paragraph-card {
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.browse-paragraph-card[open] {
+  border-color: var(--line);
+}
+
+.browse-paragraph-card > summary {
+  padding: 10px 12px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.browse-paragraph-card > fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  padding: 12px;
+}
+
+.browse-paragraph-legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .metadata-review-form {
   gap: 10px;
 }
