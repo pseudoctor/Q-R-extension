@@ -151,7 +151,7 @@ pnpm package:extension
 `pnpm package:extension` builds the extension, checks the Manifest, version synchronization, store assets, and the release file allowlist, then creates:
 
 ```text
-release/toulmin-reader-extension-v<version>.zip
+release/q-and-r-ai-critical-reading-coach-v<version>.zip
 ```
 
 Real Chrome/Edge interaction and real model requests still need manual acceptance in a target browser with a configured AI service. Local simulation scripts are not treated as evidence of real service acceptance.

@@ -7,7 +7,7 @@ const dist = resolve(root, 'dist')
 const release = resolve(root, 'release')
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 const manifest = JSON.parse(readFileSync(resolve(dist, 'manifest.json'), 'utf8'))
-const output = resolve(release, `toulmin-reader-extension-v${packageJson.version}.zip`)
+const output = resolve(release, `q-and-r-ai-critical-reading-coach-v${packageJson.version}.zip`)
 
 if (!existsSync(dist)) throw new Error('缺少 dist/，请先运行 pnpm build。')
 mkdirSync(release, { recursive: true })

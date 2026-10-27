@@ -1,6 +1,6 @@
 {
-  "extName": { "message": "問読", "description": "拡張機能名" },
+  "extName": { "message": "Q&R｜AI Critical Reading Coach", "description": "拡張機能名" },
   "extDescription": { "message": "ウェブページの記事を保存し、質問、論証分析、AIフィードバックで批判的読解を鍛えます。", "description": "拡張機能の説明" },
-  "actionTitle": { "message": "問読を開く", "description": "ツールバーのタイトル" },
-  "captureCommand": { "message": "現在の記事を取得して問読トレーニングページを開く", "description": "取得ショートカットの説明" }
+  "actionTitle": { "message": "Q&R を開く", "description": "ツールバーのタイトル" },
+  "captureCommand": { "message": "現在の記事を取得して Q&R トレーニングページを開く", "description": "取得ショートカットの説明" }
 }

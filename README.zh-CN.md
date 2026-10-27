@@ -151,7 +151,7 @@ pnpm package:extension
 `pnpm package:extension` 会构建扩展、检查 Manifest、版本同步、商店素材和发布文件白名单，然后生成：
 
 ```text
-release/toulmin-reader-extension-v<version>.zip
+release/q-and-r-ai-critical-reading-coach-v<version>.zip
 ```
 
 真实 Chrome/Edge 交互和真实模型请求仍需在目标浏览器及已配置的 AI 服务中手工验收。本地模拟脚本不会被当作真实服务验收证据。
