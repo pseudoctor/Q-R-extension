@@ -6,8 +6,8 @@ export function MetadataReviewForm({ value, disabled, onChange }: { value: strin
   const { t } = useI18n()
   const review = readMetadataReview(value)
   if (!review) return <p role="alert">{t('coach.structuredIncomplete')}</p>
-  return <div className="structured-training-form">
-    <details>
+  return <div className="structured-training-form metadata-review-form">
+    <details className="metadata-review-editor">
       <summary>{t('coach.metadata.heading')}</summary>
       {METADATA_FIELDS.map((field) => <fieldset key={field} disabled={disabled}>
         <legend>{t(`coach.field.${field}`)}</legend>
@@ -15,8 +15,26 @@ export function MetadataReviewForm({ value, disabled, onChange }: { value: strin
         {review.fields[field].status === 'found' && <label className="structured-field"><span>{t(`coach.field.${field}`)}</span><input value={review.fields[field].value} maxLength={240} onChange={(event) => onChange(JSON.stringify({ ...review, reviewed: false, fields: { ...review.fields, [field]: { ...review.fields[field], value: event.target.value } } }))} /></label>}
       </fieldset>)}
     </details>
-    <dl>{METADATA_FIELDS.map((field) => <div key={field}><dt>{t(`coach.field.${field}`)}</dt><dd>{t(`coach.metadata.${review.fields[field].status}`)}{review.fields[field].status === 'found' ? ` · ${review.fields[field].value}` : ''}</dd></div>)}</dl>
-    <label><input type="checkbox" disabled={disabled} checked={review.reviewed} onChange={(event) => onChange(JSON.stringify({ ...review, reviewed: event.target.checked }))} />{t('coach.metadata.reviewed')}</label>
+    <section className="metadata-review-summary" aria-label={t('coach.metadata.heading')}>
+      <div className="metadata-review-summary-header">
+        <div>
+          <span className="metadata-review-kicker">{t('coach.metadata.heading')}</span>
+          <p>{t('coach.metadata.status')}</p>
+        </div>
+        <span className={`metadata-review-state${review.reviewed ? ' is-reviewed' : ''}`}>{review.reviewed ? t('coach.metadata.reviewed') : t('coach.metadata.pending')}</span>
+      </div>
+      <dl className="metadata-review-list">{METADATA_FIELDS.map((field) => {
+        const item = review.fields[field]
+        return <div className="metadata-review-row" key={field}>
+          <dt>
+            <span>{t(`coach.field.${field}`)}</span>
+            <small className={`metadata-status metadata-status-${item.status}`}>{t(`coach.metadata.${item.status}`)}</small>
+          </dt>
+          <dd>{item.status === 'found' && item.value.trim() ? item.value : <span className="metadata-empty-value">{t(`coach.metadata.${item.status}`)}</span>}</dd>
+        </div>
+      })}</dl>
+      <label className="metadata-review-confirm"><input type="checkbox" disabled={disabled} checked={review.reviewed} onChange={(event) => onChange(JSON.stringify({ ...review, reviewed: event.target.checked }))} /><span>{t('coach.metadata.reviewed')}</span></label>
+    </section>
   </div>
 }
 

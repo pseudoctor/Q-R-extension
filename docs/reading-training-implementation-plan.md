@@ -150,7 +150,7 @@ TrainingTurn 增加：
 - `src/App.tsx:TrainingCoach.start` 创建会话后直接显示固定首题，不再根据 API key 决定是否先调用 AI。
 - 第 2 到 10 轮的具体问题由 AI 生成，但提示词必须同时包含 `stepId`、轮次、步骤要求、允许评分维度和“只提出一道问题”的规则；AI 不能跳到下一步能力，也不能输出答案或文章总结。
 - `src/ai/coach.ts:buildStartPrompt` 只服务于恢复缺失问题的非首轮会话；正常前进由上一轮评分返回 `nextQuestion`。
-- `preReadingPrediction` 继续保留在文章和导出中。它是可选上下文，不改变第一轮固定问题，也不成为第一轮必须回答的比较任务；不得让 `ai.startReflection` 覆盖第一轮题目。
+- 新流程不再要求单独填写 `preReadingPrediction`；第一步的 `preview.expectedQuestion` 是唯一的预读问题字段。旧文章仍保留该字段的兼容读取和历史导出，不再作为 AI 评分或出题上下文。
 
 ### 6.2 评分契约
 
@@ -205,7 +205,7 @@ TrainingTurn 增加：
 ### 7.2 具体界面行为
 
 - `src/App.tsx:TrainingCoach`：删除首轮 `readConfirmed` 门槛；未开始时展示预读目标和“开始第一轮”，不出现“我已读完文章”。
-- 进入第 1 轮后显示 `1 / 10`、固定题、预读说明和回答框；可选的阅读前预测继续在文章编辑区保存，但不替换首题。
+- 进入第 1 轮后显示 `1 / 10`、固定题、预读说明和回答框；预读问题在第一步集中填写，不再在文章编辑区重复填写预测。
 - 第 1 轮反馈后在下一问题上方显示通读提示；第 2 轮显示“第一遍快速浏览”，第 3 轮显示“再次精读/`分层阅读·3句法`”。
 - 当前轮反馈继续显示在下一问题上方；反馈失败时保留当前回答和原问题，错误信息不覆盖回答内容。
 - 已完成轮次仍支持“上一步”：`rewindTrainingSession` 删除最后一个正式 turn、恢复该 turn 的 `question/answer/stepId`，并把进度回到该轮；不可回退到旧八轮记录。
@@ -383,7 +383,7 @@ node scripts/check-extension.mjs
 | 旧索引被新数组误读 | 导出或 UI 直接使用 `LESSON_STEPS[turn.stepIndex]` | 所有读路径先判断 `flowId`；旧记录使用 `LEGACY_LESSON_STEPS`；增加旧导出断言 |
 | 存储升级破坏旧构建 | 把 version 1 原地改成 version 2 | 采用独立 `trainingSessionsV2`；旧键不迁移、不改写；回滚旧构建时旧八轮继续可读 |
 | AI 越级出题或评分 | 模型忽略当前步骤指令 | prompt 同时传 step ID/要求/维度；校验未测维度和引用；失败不 commit；必要时走桥接重试 |
-| 首轮被预测或 AI 改写 | 继续使用 `ai.startReflection` 或 `ai-start` | 首题由本地 lesson 常量提供；预测只作可选上下文；自动检查断言首轮无 fetch |
+| 首轮被额外预测或 AI 改写 | 在文章编辑区保留独立预测，或让 AI 改写首题 | 首题由本地 lesson 常量提供；第一步的 `preview.expectedQuestion` 作为唯一预读问题；自动检查确认预测字段不进入新提示词 |
 | AI 失败丢回答 | 先评分后保存，或失败时清空 draft | 提交顺序固定为 save draft → AI/桥接 → validate → commit；手工断网测试 |
 | 段落编号不一致 | AI 使用原始文本分段而 UI 使用 block 分段 | 继续复用 `numberArticleBlocks(getArticleBlocks(...))`；保留现有段落回归检查 |
 | 多语言文案错位 | 只更新 zh-CN 或动态 key 缺失 | 四个 locale 同步更新；`check:i18n`、切换语言手工验收和 bundle marker 检查 |
@@ -416,7 +416,7 @@ node scripts/check-extension.mjs
 以下问题不应阻塞技术方案；若没有新的产品决定，按“推荐默认”执行：
 
 1. **旧八轮记录的用户体验**：是只读归档并新建十步，还是允许用户继续完成旧八轮？推荐只读归档 + 新建十步，原因是旧流程不应继续被新代码评分，且回滚最安全。负责人：产品/训练设计。
-2. **阅读前预测的评分定位**：是把预测与原文对照作为第一轮硬要求，还是仅作为文章上下文？推荐仅作为可选上下文，因为十步文档规定第一轮只记录观察，不能提前评价或下结论。负责人：训练设计。
+2. **阅读前预测的评分定位**：已决定不再设置独立预测字段，避免与第一步 `preview.expectedQuestion` 重复；旧文章字段只用于兼容历史导出，不参与新训练评分。负责人：训练设计。
 3. **第 2 到 10 轮是否允许用户切换 AI 生成问题**：推荐不提供手动改题入口；题目由 AI 在固定步骤契约内生成，失败时重试或走桥接，避免用户跳步。负责人：产品/训练设计。
 4. **非中文 locale 的教学文案最终审校人**：技术上四个 locale 必须同步提供可用文案，发布前仍需指定审校人确认术语，尤其是 `warrant/backing/qualifier/rebuttal` 的译法。负责人：本地化维护者。
 

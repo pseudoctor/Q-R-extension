@@ -148,7 +148,7 @@ const firstRoundGrade = buildGradePrompt('第一段。\n\n第二段。', '标题
   ...session,
   currentStep: 0,
   currentQuestion: '预读问题？',
-}, '', 'zh-CN')
+}, 'zh-CN')
 const firstRoundSchema = firstRoundGrade.responseFormat.json_schema.schema
 const firstRoundDimensions = firstRoundSchema.properties.dimensions.properties
 assert.equal(firstRoundDimensions.fidelity.properties.score.type, 'integer')

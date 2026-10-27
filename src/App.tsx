@@ -13,7 +13,6 @@ import type {
   ExtensionMessage,
   ExtensionResponse,
   ErrorCode,
-  PreReadingPredictionDraft,
   SavedArticle,
   TrainingSession,
   TrainingDraftFieldId,
@@ -312,8 +311,8 @@ function SidePanel() {
             <span>{t('side.quick.pasteBody')}</span>
           </li>
           <li>
-            <strong>{t('side.quick.predictTitle')}</strong>
-            <span>{t('side.quick.predictBody')}</span>
+            <strong>{t('side.quick.previewTitle')}</strong>
+            <span>{t('side.quick.previewBody')}</span>
           </li>
           <li>
             <strong>{t('side.quick.saveTitle')}</strong>
@@ -672,7 +671,6 @@ function TrainingPage() {
   const [url, setUrl] = useState('')
   const [author, setAuthor] = useState('')
   const [source, setSource] = useState('')
-  const [preReadingPrediction, setPreReadingPrediction] = useState('')
   const [text, setText] = useState('')
   const [sourceEditorOpen, setSourceEditorOpen] = useState(true)
   const [status, setStatus] = useState('')
@@ -692,10 +690,7 @@ function TrainingPage() {
 
   useEffect(() => {
     const loadCapture = async () => {
-      const [response, draftResponse] = await Promise.all([
-        sendExtensionMessage<CaptureRecord | null>({ type: 'get-pending-capture' }),
-        sendExtensionMessage<PreReadingPredictionDraft | null>({ type: 'get-pre-reading-prediction-draft' }),
-      ])
+      const response = await sendExtensionMessage<CaptureRecord | null>({ type: 'get-pending-capture' })
       if (!response.ok) {
         setLoadError(errorMessage(response.error))
         setLoading(false)
@@ -709,15 +704,13 @@ function TrainingPage() {
         setUrl('')
         setAuthor('')
         setSource('')
-        setPreReadingPrediction('')
         setText('')
         setSourceEditorOpen(true)
         setLoading(false)
         return
       }
       if (!response.data) {
-      setLoadError(t('training.noCapture'))
-        if (draftResponse.ok && draftResponse.data?.articleId === null) setPreReadingPrediction(draftResponse.data.value)
+        setLoadError(t('training.noCapture'))
         setLoading(false)
         return
       }
@@ -727,10 +720,6 @@ function TrainingPage() {
       setUrl(response.data.url)
       setAuthor(response.data.metadata?.author ?? response.data.author ?? '')
       setSource(response.data.metadata?.source ?? '')
-      const predictionDraft = draftResponse.ok && draftResponse.data?.articleId === response.data.id
-        ? draftResponse.data.value
-        : null
-      setPreReadingPrediction(predictionDraft ?? response.data.preReadingPrediction ?? '')
       setText(response.data.text)
       setSourceEditorOpen(false)
       setLoading(false)
@@ -738,18 +727,6 @@ function TrainingPage() {
 
     void loadCapture()
   }, [queryErrorCode, t])
-
-  useEffect(() => {
-    if (loading || queryErrorCode) return
-    const timer = window.setTimeout(() => {
-      void sendExtensionMessage<null>({
-        type: 'save-pre-reading-prediction-draft',
-        ...(capture?.id ? { articleId: capture.id } : {}),
-        value: preReadingPrediction,
-      })
-    }, 500)
-    return () => window.clearTimeout(timer)
-  }, [capture?.id, loading, preReadingPrediction, queryErrorCode])
 
   useEffect(() => {
     if (!capture?.id || loading) return
@@ -806,7 +783,7 @@ function TrainingPage() {
       ...(author.trim() ? { author: author.trim() } : {}),
       text: trimmedText,
       blocks,
-      preReadingPrediction: preReadingPrediction.trim(),
+      ...(capture?.preReadingPrediction?.trim() ? { preReadingPrediction: capture.preReadingPrediction.trim() } : {}),
       ...(capture?.selectedText ? { selectedText: capture.selectedText } : {}),
       capturedAt: capture?.capturedAt ?? new Date().toISOString(),
       source: capture?.source ?? 'side-panel',
@@ -841,7 +818,6 @@ function TrainingPage() {
         trimmedText,
         capture && capture.text.trim() === trimmedText ? capture.blocks : undefined,
       ),
-      preReadingPrediction: preReadingPrediction.trim(),
     }
     if (capture && 'savedAt' in capture) {
       return { ...capture, ...fields }
@@ -966,11 +942,6 @@ function TrainingPage() {
                 <label>
                   {t('training.source')}
                   <input value={source} onChange={(event) => setSource(event.target.value)} placeholder={t('training.sourcePlaceholder')} maxLength={240} />
-                </label>
-                <label className="prediction-field">
-                  <span>{t('training.prediction')}</span>
-                  <small>{t('training.predictionHint')}</small>
-                  <textarea value={preReadingPrediction} onChange={(event) => setPreReadingPrediction(event.target.value)} placeholder={t('training.predictionPlaceholder')} rows={4} maxLength={2000} />
                 </label>
                 <details className="source-editor" open={sourceEditorOpen} onToggle={(event) => setSourceEditorOpen(event.currentTarget.open)}>
                   <summary>

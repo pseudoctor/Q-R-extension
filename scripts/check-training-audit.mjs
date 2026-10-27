@@ -329,7 +329,7 @@ try {
       assert.equal(l.isTrainingDraftValid(session), true)
       assert.equal(l.isTrainingDraftValid({ ...session, structuredDraft: { ...structuredDraft, 'applicability.quote': 'Fabricated quotation.' } }), false)
       assert.equal(l.isTrainingDraftValid({ ...session, structuredDraft: { ...structuredDraft, 'applicability.reason': '' } }), false)
-      const prompt = JSON.parse(c.buildGradePrompt(blocks[0].text, 'Instructions', undefined, { ...session, turns: [], structuredDraft: { ...structuredDraft, 'toulminSimple.claim': 'Hidden prior claim' } }, '', 'zh-CN', blocks).user)
+      const prompt = JSON.parse(c.buildGradePrompt(blocks[0].text, 'Instructions', undefined, { ...session, turns: [], structuredDraft: { ...structuredDraft, 'toulminSimple.claim': 'Hidden prior claim' } }, 'zh-CN', blocks).user)
       assert.ok(prompt.requiredFields.includes('applicability.reason'))
       assert.ok(!prompt.requiredFields.includes('toulminSimple.claim'))
       assert.equal(prompt.structuredDraft['toulminSimple.claim'], undefined)
@@ -404,7 +404,7 @@ try {
     const blocks = [{ id: 'first', type: 'paragraph', text: 'Opening observation.' }, { id: 'middle', type: 'paragraph', text: 'HIDDEN_BODY_CONCLUSION' }, { id: 'last', type: 'paragraph', text: 'Final observation.' }]
     for (const [currentStep, step] of l.LESSON_STEPS.entries()) {
       const session = { currentStep, draft: 'An independent answer.', turns: [], importantParagraphs: [1] }
-      const prompt = JSON.parse(c.buildGradePrompt(blocks.map((block) => block.text).join('\n\n'), 'Title', undefined, session, '', 'zh-CN', blocks).user)
+      const prompt = JSON.parse(c.buildGradePrompt(blocks.map((block) => block.text).join('\n\n'), 'Title', undefined, session, 'zh-CN', blocks).user)
       assert.deepEqual(Object.keys(prompt.rubric.criteria).sort(), [...step.dimensions].sort())
       assert.ok(prompt.rubric.scoreBands.length >= 4)
       assert.ok(prompt.rubric.allowedAbsence.length)

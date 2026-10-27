@@ -9,7 +9,6 @@ import type {
   ExtensionMessage,
   ExtensionResponse,
   Locale,
-  PreReadingPredictionDraft,
   SavedArticle,
   StorageState,
   TrainingSession,
@@ -68,7 +67,6 @@ import { isTrainingDraftValid } from './training/lessons'
 import { LESSON_STEPS } from './training/lessons'
 
 const TRAINING_PAGE = 'training.html'
-const PRE_READING_PREDICTION_DRAFT_KEY = 'preReadingPredictionDraft'
 
 type PageExtraction = {
   title: string
@@ -117,17 +115,6 @@ async function getStoredState(): Promise<StorageState> {
     'lastTrainingTabId',
     'lastPrintTabId',
   ]) as Promise<StorageState>
-}
-
-async function getPreReadingPredictionDraft(): Promise<PreReadingPredictionDraft | null> {
-  const stored = await chrome.storage.local.get(PRE_READING_PREDICTION_DRAFT_KEY) as StorageState
-  const draft = stored.preReadingPredictionDraft
-  if (!draft || typeof draft.value !== 'string' || typeof draft.updatedAt !== 'string') return null
-  return {
-    articleId: typeof draft.articleId === 'string' ? draft.articleId : null,
-    value: draft.value.slice(0, 2_000),
-    updatedAt: draft.updatedAt,
-  }
 }
 
 async function captureCurrentPage(
@@ -179,7 +166,6 @@ async function captureCurrentPage(
 
   try {
     await chrome.storage.local.set({ pendingCapture: capture })
-    await chrome.storage.local.remove(PRE_READING_PREDICTION_DRAFT_KEY)
   } catch {
     return createError('STORAGE_FAILED', '文章暂时无法保存到插件本地存储。')
   }
@@ -600,7 +586,7 @@ async function startAiTraining(articleId: string): Promise<ExtensionResponse<Tra
   const session = await startTrainingSession(articleId, locale, articleSnapshot)
   if (session.currentStep === 0 || session.currentStep >= LESSON_STEPS.length) return success(session)
   if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
-  const prompt = buildStartPrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, session.currentStep, article.preReadingPrediction, locale, trainingSourceBlocks(article, session))
+  const prompt = buildStartPrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, session.currentStep, locale, trainingSourceBlocks(article, session))
   const completion = await requestAiJson(await readAiSettings(), prompt)
   if (!completion.ok) return createError(completion.error.code, completion.error.message)
 
@@ -665,7 +651,7 @@ async function gradeAiTraining(articleId: string, answerVersionId?: string, sess
     return createError('TRAINING_ANSWER_FORMAT_INVALID', '回答没有满足当前训练步骤要求。')
   }
   const sourceBlocks = trainingSourceBlocks(article, promptSession)
-  const prompt = buildGradePrompt(promptSession.articleSnapshot?.text ?? article.text, promptSession.articleSnapshot?.title ?? article.title, promptSession.articleSnapshot?.metadata ?? article.metadata, promptSession, article.preReadingPrediction, locale, sourceBlocks)
+  const prompt = buildGradePrompt(promptSession.articleSnapshot?.text ?? article.text, promptSession.articleSnapshot?.title ?? article.title, promptSession.articleSnapshot?.metadata ?? article.metadata, promptSession, locale, sourceBlocks)
   const completion = await requestAiJson(await readAiSettings(), prompt)
   if (!completion.ok) {
     await finishTrainingRequest(articleId, requestId, 'failed', locale, { code: completion.error.code, message: completion.error.message })
@@ -771,7 +757,7 @@ async function prepareAiBridge(articleId: string, answerVersionId?: string, sess
   if (!request) return createError('TRAINING_CONFLICT', '桥接请求对应的答案版本已不存在，请重新提交。')
   if (request.request.status === 'stale') return createError('TRAINING_CONFLICT', '桥接请求已过期，请重新提交当前答案。')
   const sourceBlocks = trainingSourceBlocks(article, session)
-  const prompt = buildGradePrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, session, article.preReadingPrediction, locale, sourceBlocks)
+  const prompt = buildGradePrompt(session.articleSnapshot?.text ?? article.text, session.articleSnapshot?.title ?? article.title, session.articleSnapshot?.metadata ?? article.metadata, session, locale, sourceBlocks)
   return success({
     requestId,
     prompt: `${prompt.system}\n\n${translate(locale, 'ai.bridgeInstruction', { requestId })}\n\n${translate(locale, 'ai.materialInstruction')}\n${prompt.user}`,
@@ -870,7 +856,6 @@ async function handleMessage(
       return captureAndOpen(message.source)
     case 'open-manual-paste-page':
       await chrome.storage.local.set({ pendingCapture: null })
-      await chrome.storage.local.remove(PRE_READING_PREDICTION_DRAFT_KEY)
       return openTrainingPage()
     case 'open-settings':
       return openSettingsPage()
@@ -887,17 +872,6 @@ async function handleMessage(
     case 'get-pending-capture': {
       const state = await getStoredState()
       return success(state.pendingCapture ?? null)
-    }
-    case 'get-pre-reading-prediction-draft':
-      return success(await getPreReadingPredictionDraft())
-    case 'save-pre-reading-prediction-draft': {
-      const draft: PreReadingPredictionDraft = {
-        articleId: message.articleId ?? null,
-        value: message.value.slice(0, 2_000),
-        updatedAt: new Date().toISOString(),
-      }
-      await chrome.storage.local.set({ [PRE_READING_PREDICTION_DRAFT_KEY]: draft })
-      return success(null)
     }
     case 'clear-pending-capture':
       await chrome.storage.local.set({ pendingCapture: null })

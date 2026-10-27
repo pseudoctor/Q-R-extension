@@ -108,7 +108,7 @@ const session = {
   startedAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 }
-const prompt = buildGradePrompt('不按空行分段的原文', '标题', { subtitle: '', author: '', source: '' }, session, '', 'zh-CN', numberedBlocks)
+const prompt = buildGradePrompt('不按空行分段的原文', '标题', { subtitle: '', author: '', source: '' }, session, 'zh-CN', numberedBlocks)
 assert.deepEqual(JSON.parse(prompt.user).paragraphs, [
   { paragraph: 1, text: '开头背景' },
   { paragraph: 2, text: '结尾说明' },

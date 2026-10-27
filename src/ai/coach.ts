@@ -21,19 +21,14 @@ export function buildStartPrompt(
   title: string,
   metadata: ArticleMetadata = emptyMetadata(),
   stepIndex = 0,
-  preReadingPrediction = '',
   locale: Locale = 'zh-CN',
   blocks?: ArticleBlock[],
 ) {
   const step = getLessonSteps(locale)[stepIndex] ?? getLessonSteps(locale)[0]
   const sourceBlocks = getArticleBlocks(article, blocks)
   const scope = assessmentScope(sourceBlocks, step.id)
-  const prediction = preReadingPrediction.trim()
-  const reflectionInstruction = stepIndex === 0 && prediction
-    ? translate(locale, 'ai.startReflection')
-    : ''
   return {
-    system: `${translate(locale, 'ai.basePrompt')}\n${translate(locale, 'ai.stepPrefix')}“${step.name}”（${step.focus}，stepId: ${step.id}）。${step.instruction}\n${reflectionInstruction}\n${translate(locale, 'ai.startJsonRule')}`,
+    system: `${translate(locale, 'ai.basePrompt')}\n${translate(locale, 'ai.stepPrefix')}“${step.name}”（${step.focus}，stepId: ${step.id}）。${step.instruction}\n${translate(locale, 'ai.startJsonRule')}`,
     user: JSON.stringify({
       stepId: step.id,
       stepIndex,
@@ -47,7 +42,6 @@ export function buildStartPrompt(
       articleMetadataState: initialMetadataReview({ title, metadata }),
       applicabilityRule: translate(locale, 'coach.applicability.hint'),
       dependsOn: step.dependsOn,
-      ...(prediction ? { preReadingPrediction: prediction } : {}),
       paragraphs: promptParagraphs(sourceBlocks, scope),
       sourceBlocks: promptSourceBlocks(sourceBlocks, scope),
       sourceCitationRule: '正文段落使用 paragraph>=1；标题、列表、图表等非正文块使用 paragraph:0 并填写对应 blockId。quote 必须是该来源块中的连续文字。',
@@ -66,7 +60,6 @@ export function buildGradePrompt(
   title: string,
   metadata: ArticleMetadata = emptyMetadata(),
   session: TrainingSession,
-  preReadingPrediction = '',
   locale: Locale = 'zh-CN',
   blocks?: ArticleBlock[],
 ) {
@@ -78,14 +71,10 @@ export function buildGradePrompt(
   const expectedNextStepId = getNextLessonStepId(session.currentStep, locale)
   const next = expectedNextStepId ? steps.find((candidate) => candidate.id === expectedNextStepId) : null
   const sourceBlocks = getArticleBlocks(article, blocks)
-  const prediction = preReadingPrediction.trim()
   const question = session.currentStep < LESSON_STEPS.length ? step.question : session.currentQuestion
   const scope = assessmentScope(sourceBlocks, step.id, session.importantParagraphs)
-  const reflectionInstruction = session.currentStep === 0 && prediction
-    ? translate(locale, 'ai.gradeReflection')
-    : ''
   return {
-    system: `${translate(locale, 'ai.basePrompt')}\n${translate(locale, 'ai.stepPrefix')}“${step.name}”（${step.focus}，stepId: ${step.id}）。${translate(locale, 'ai.roundRequirement')}${step.instruction}\n${reflectionInstruction}\n${translate(locale, 'ai.gradeRules')} ${translate(locale, 'ai.stepDimensions', { dimensions: step.dimensions.join(', ') })} ${completed || !next ? translate(locale, 'ai.completedRule') : translate(locale, 'ai.nextRule', { step: next.name })}${translate(locale, 'ai.jsonOnly')} ${translate(locale, 'ai.feedbackShape')}`,
+    system: `${translate(locale, 'ai.basePrompt')}\n${translate(locale, 'ai.stepPrefix')}“${step.name}”（${step.focus}，stepId: ${step.id}）。${translate(locale, 'ai.roundRequirement')}${step.instruction}\n${translate(locale, 'ai.gradeRules')} ${translate(locale, 'ai.stepDimensions', { dimensions: step.dimensions.join(', ') })} ${completed || !next ? translate(locale, 'ai.completedRule') : translate(locale, 'ai.nextRule', { step: next.name })}${translate(locale, 'ai.jsonOnly')} ${translate(locale, 'ai.feedbackShape')}`,
     user: JSON.stringify({
       stepId: step.id,
       stepIndex: session.currentStep,
@@ -106,7 +95,6 @@ export function buildGradePrompt(
       dependsOn: step.dependsOn,
       title,
       metadata,
-      ...(prediction ? { preReadingPrediction: prediction } : {}),
       paragraphs: promptParagraphs(sourceBlocks, scope),
       sourceBlocks: promptSourceBlocks(sourceBlocks, scope),
       sourceCitationRule: '正文段落使用 paragraph>=1；标题、列表、图表等非正文块使用 paragraph:0 并填写对应 blockId。quote 必须是该来源块中的连续文字。',
