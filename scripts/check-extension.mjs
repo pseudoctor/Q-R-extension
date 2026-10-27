@@ -60,7 +60,7 @@ if ((manifest.optional_host_permissions ?? []).length > 0) {
 }
 
 const background = readFileSync(resolve(dist, manifest.background.service_worker), 'utf8')
-for (const marker of ['ai-start', 'ai-grade', 'rewind-training-session', 'continue-training', 'confirm-training-step', 'list-ai-models', 'prepare-ai-bridge', 'import-ai-feedback', 'open-manual-paste-page', 'currentStep', 'currentStepId', 'answerVersionId', 'aiRequests', 'nextStepId', 'flowId', 'trainingSessionsV2', 'trainingSessionsV3', 'trainingTestSessionsV3', 'TRAINING_READ_ONLY', 'sourceCitationRule', 'articleBody', 'blocks', 'chart', 'svg', 'canvas', 'advertisement', 'narrated by', 'itemprop=', '#rm_txt_zw', 'div, section', '浏览器内部页', '/chat/completions', 'AI_INVALID_ENDPOINT', 'AI_RESPONSE_INVALID_JSON', 'AbortController', 'response_format', 'reasoning_effort']) {
+for (const marker of ['ai-start', 'ai-grade', 'ai-reference-answer', 'rewind-training-session', 'continue-training', 'confirm-training-step', 'list-ai-models', 'open-manual-paste-page', 'currentStep', 'currentStepId', 'answerVersionId', 'aiRequests', 'nextStepId', 'flowId', 'trainingSessionsV2', 'trainingSessionsV3', 'trainingTestSessionsV3', 'TRAINING_READ_ONLY', 'TRAINING_AI_REQUIRED', 'sourceCitationRule', 'articleBody', 'blocks', 'chart', 'svg', 'canvas', 'advertisement', 'narrated by', 'itemprop=', '#rm_txt_zw', 'div, section', '浏览器内部页', '/chat/completions', 'AI_INVALID_ENDPOINT', 'AI_RESPONSE_INVALID_JSON', 'AbortController', 'response_format', 'reasoning_effort']) {
   if (!background.includes(marker)) {
     throw new Error(`Service Worker 缺少 AI 核心逻辑：${marker}`)
   }
@@ -70,9 +70,14 @@ const appBundle = readdirSync(resolve(dist, 'assets'))
   .filter((file) => file.endsWith('.js'))
   .map((file) => readFileSync(resolve(dist, 'assets', file), 'utf8'))
   .join('\n')
-for (const marker of ['AI FEEDBACK', '提交并评分', 'CHATGPT ASSISTED REVIEW', '刷新模型', 'model-options-select', 'model-status', 'settings.apiEndpoint', 'provider.custom', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new', '十步训练', 'quick-browse', 'final-review', 'transitionAfterPreview', 'legacyReadOnly', 'historicalReadOnly', 'saveContinue', 'round-transition', 'review-required', 'confirmStillApplies', 'historyView', '手动粘贴文章', '快速开始', '获取当前文章', 'coach.field.expectedQuestion', 'side.quick.previewTitle', 'onChanged']) {
+for (const marker of ['AI FEEDBACK', '提交并评分', '配置 AI 后评分', '刷新模型', 'model-options-select', 'model-status', 'settings.apiEndpoint', 'provider.custom', '文章架', '成长记录', 'READING PREVIEW', 'articleBlocks', 'source-heading', 'obsidian://new', '十步训练', 'quick-browse', 'final-review', 'transitionAfterPreview', 'legacyReadOnly', 'historicalReadOnly', 'saveContinue', 'round-transition', 'review-required', 'confirmStillApplies', 'historyView', '手动粘贴文章', '快速开始', '获取当前文章', 'coach.field.expectedQuestion', 'side.quick.previewTitle', 'onChanged']) {
   if (!appBundle.includes(marker)) {
     throw new Error(`训练页面缺少核心交互：${marker}`)
+  }
+}
+for (const forbidden of ['prepare-ai-bridge', 'import-ai-feedback', 'CHATGPT ASSISTED REVIEW', 'chatgpt.com', 'bridge-card']) {
+  if (background.includes(forbidden) || appBundle.includes(forbidden)) {
+    throw new Error(`构建产物仍包含已移除的桥接评分入口：${forbidden}`)
   }
 }
 if (!appBundle.includes('generateReadingMarkdown') && !appBundle.includes('完整 Markdown')) {

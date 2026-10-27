@@ -11,6 +11,7 @@ const {
   getNextLessonStepId,
   isStructuredDraftComplete,
   isLessonAnswerFormatValid,
+  normalizeTrainingStructuredDraft,
   structuredFieldsForStep,
 } = await server.ssrLoadModule('/src/training/lessons.ts')
 const {
@@ -58,7 +59,10 @@ assert.equal(getLessonSteps('zh-CN')[0].name, '预读')
 assert.equal(getLessonSteps('zh-CN')[0].focus, '观察而不是评价')
 assert.equal(getLessonSteps('zh-CN')[0].question, '文章的外部线索透露了哪些信息？你预计它要回答什么问题？')
 assert.equal(getLessonSteps('zh-CN')[0].instruction, '先看文章外围信息和首尾段，只记录观察，不要急着评价。')
-assert.equal(getLessonSteps('zh-CN')[1].question, '文章如何展开？记录段落结构和代表性句子。')
+assert.equal(getLessonSteps('zh-CN')[1].question, '文章如何展开？请为每段标记功能，并选出下一步要重点阅读的段落。')
+assert.deepEqual(structuredFieldsForStep('quick-browse'), ['quickBrowse.paragraphMap', 'quickBrowse.structure'])
+assert.equal(normalizeTrainingStructuredDraft({ 'quickBrowse.paragraphLabels': 'legacy labels' })?.['quickBrowse.paragraphLabels'], 'legacy labels')
+assert.equal(normalizeTrainingStructuredDraft({ 'quickBrowse.representativeSentences': 'legacy sentences' })?.['quickBrowse.representativeSentences'], 'legacy sentences')
 assert.equal(getLessonSteps('zh-CN')[2].question, '对选出的重要段落分别回答：说了什么？为什么？想告诉你什么？')
 assert.equal(getLessonSteps('zh-CN')[2].name, '分层阅读·3句法')
 assert.match(getLessonSteps('zh-CN')[2].hint, /原文内容和你的推断/)

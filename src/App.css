@@ -2056,60 +2056,6 @@
   color: var(--muted);
 }
 
-.bridge-card {
-  display: grid;
-  gap: 10px;
-  margin-top: 20px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 16px;
-  background: #fffaf3;
-}
-
-.bridge-card h4 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 16px;
-}
-
-.bridge-card p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.bridge-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.bridge-prompt {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.bridge-card textarea {
-  width: 100%;
-  box-sizing: border-box;
-  min-height: 120px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px;
-  color: var(--ink);
-  background: var(--surface-muted);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.55;
-  resize: vertical;
-}
-
-.bridge-card .primary-button {
-  justify-self: start;
-}
-
 .print-shell {
   width: min(820px, 100%);
   min-height: 100vh;

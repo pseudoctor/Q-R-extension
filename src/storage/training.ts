@@ -1029,7 +1029,7 @@ function normalizeTrainingAiRequests(value: unknown): TrainingAiRequest[] {
   return value.filter((item): item is TrainingAiRequest => {
     if (!isRecord(item)) return false
     return typeof item.id === 'string' && item.id.length > 0 &&
-      (item.kind === 'grade' || item.kind === 'reference' || item.kind === 'bridge') &&
+      (item.kind === 'grade' || item.kind === 'reference') &&
       typeof item.sessionId === 'string' && item.sessionId.length > 0 &&
       typeof item.stepId === 'string' && item.stepId.length > 0 &&
       (item.answerVersionId === undefined || typeof item.answerVersionId === 'string') &&

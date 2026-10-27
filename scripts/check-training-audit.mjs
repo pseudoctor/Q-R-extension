@@ -114,7 +114,7 @@ try {
     assert.deepEqual(merged.turns[0].feedback, feedback)
     assert.strictEqual(state.mergeTrainingFeedback(local, { ...after, sessionId: 'different' }), local)
   })
-  await test('background bridge targets a saved version without changing active work', async () => {
+  await test('formal advancement requires direct AI feedback and preserves active work', async () => {
     let listener
     chrome.commands = { onCommand: { addListener() {} } }
     chrome.runtime = { onInstalled: { addListener() {} }, onMessage: { addListener(callback) { listener = callback } } }
@@ -122,26 +122,18 @@ try {
     await server.ssrLoadModule('/src/background.ts')
     const send = (message) => new Promise((resolve) => listener(message, {}, resolve))
     const articles = await server.ssrLoadModule('/src/storage/articles.ts')
-    await articles.upsertSavedArticle({ id: 'bridge-saved', title: 'Article', text: 'First source paragraph.\n\nLast source paragraph.', url: '', source: 'manual', capturedAt: '2026-01-01', savedAt: '2026-01-01' })
-    await s.startTrainingSession('bridge-saved')
+    await articles.upsertSavedArticle({ id: 'direct-ai-required', title: 'Article', text: 'First source paragraph.\n\nLast source paragraph.', url: '', source: 'manual', capturedAt: '2026-01-01', savedAt: '2026-01-01' })
+    await s.startTrainingSession('direct-ai-required')
     const fields = Object.fromEntries(l.STRUCTURED_FIELD_DEFINITIONS.preview.filter((field) => field.id !== 'preview.metadata').map((field) => [field.id, 'Observed source information']))
-    await s.saveTrainingDraft('bridge-saved', 'saved independent observation', 'zh-CN', fields)
-    const frozen = await s.freezeTrainingAnswer('bridge-saved')
-    await s.advanceTrainingSession('bridge-saved')
-    const before = await s.saveTrainingDraft('bridge-saved', 'unfinished current input')
-    const message = { type: 'prepare-ai-bridge', articleId: before.articleId, sessionId: before.sessionId, answerVersionId: frozen.answerVersionId }
-    const response = await send(message)
-    assert.equal(response.ok, true, JSON.stringify(response))
-    assert.ok(response.data.prompt.includes('saved independent observation'))
-    assert.equal(response.data.prompt.includes('unfinished current input'), false)
-    const repeated = await send(message)
-    assert.equal(repeated.data.requestId, response.data.requestId)
-    const stale = await send({ ...message, sessionId: 'other-session' })
-    assert.equal(stale.error.code, 'TRAINING_CONFLICT')
-    const after = await s.getTrainingSession('bridge-saved')
+    await s.saveTrainingDraft('direct-ai-required', 'saved independent observation', 'zh-CN', fields)
+    const frozen = await s.freezeTrainingAnswer('direct-ai-required')
+    const blocked = await send({ type: 'continue-training', articleId: 'direct-ai-required', sessionId: frozen.sessionId, stepId: frozen.currentStepId, draftRevision: frozen.draftRevision, answerVersionId: frozen.answerVersionId })
+    assert.equal(blocked.ok, false)
+    assert.equal(blocked.error.code, 'TRAINING_AI_REQUIRED')
+    const before = await s.saveTrainingDraft('direct-ai-required', 'unfinished current input')
+    const after = await s.getTrainingSession('direct-ai-required')
     assert.equal(after.draft, before.draft)
     assert.equal(after.currentStep, before.currentStep)
-    assert.equal(after.aiRequests.filter((request) => request.id === response.data.requestId).length, 1)
   })
   await test('archive survives subsequent saves and other article creation', async () => {
     await s.startTrainingSession('archive')

@@ -1,6 +1,6 @@
 🥷 # 十步阅读训练重组实施计划
 
-> 历史计划：本文件记录早期“V2 双键/旧八轮兼容”设计，不再作为当前执行顺序。当前实施以 [reading-training-improvement-plan.md](./reading-training-improvement-plan.md) 和 [reading-training-improvement-todo.md](./reading-training-improvement-todo.md) 为准；当前代码已进一步加入 `trainingSessionsV3`，保留 V1/V2 原始记录。
+> 历史计划：本文件记录早期“V2 双键/旧八轮兼容”设计，不再作为当前执行顺序。当前实施以 [reading-training-improvement-plan.md](./reading-training-improvement-plan.md) 和 [reading-training-improvement-todo.md](./reading-training-improvement-todo.md) 为准；当前代码已进一步加入 `trainingSessionsV3`，保留 V1/V2 原始记录。本文中的 ChatGPT/桥接路径仅是历史设计，当前实现已移除，不能作为现行功能使用。
 
 ## 1. 计划范围与结论
 

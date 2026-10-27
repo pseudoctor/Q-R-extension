@@ -38,9 +38,9 @@ export const LESSON_STEPS: LessonStep[] = [
     stage: '连续阅读',
     name: '第一遍快速浏览',
     focus: '段落结构',
-    instruction: '通读全文，关注每段首句、末句和转折。',
-    question: '文章如何展开？记录段落结构和代表性句子。',
-    hint: '先看每段开头和结尾，再标记转折、递进、举例和总结。',
+    instruction: '通读全文，关注段落结构、首末句和转折，并标记下一步要重点阅读的段落。',
+    question: '文章如何展开？请为每段标记功能，并选出下一步要重点阅读的段落。',
+    hint: '第2步只建立文章结构地图：标记段落功能和重要段落候选；首末句由系统自动识别，只有识别不准确时才修改。第3步再对候选段落使用三句法。',
     dimensions: ['fidelity', 'structure'],
     dependsOn: ['preview'],
   },
@@ -256,8 +256,6 @@ export const STRUCTURED_FIELD_DEFINITIONS: Partial<Record<string, TrainingFieldD
   'quick-browse': [
     { id: 'quickBrowse.paragraphMap', labelKey: 'coach.browse.map', multiline: true },
     { id: 'quickBrowse.structure', labelKey: 'coach.field.structure', multiline: true },
-    { id: 'quickBrowse.paragraphLabels', labelKey: 'coach.field.paragraphLabels', multiline: true },
-    { id: 'quickBrowse.representativeSentences', labelKey: 'coach.field.representativeSentences', multiline: true },
   ],
   'three-points': [
     { id: 'threePoints.evidence', labelKey: 'coach.field.threePointSources', multiline: true },
@@ -324,6 +322,11 @@ export function structuredFieldsForStep(stepId: string) {
   return (STRUCTURED_FIELD_DEFINITIONS[stepId] ?? []).map(({ id }) => id)
 }
 
+const LEGACY_STRUCTURED_FIELDS: TrainingDraftFieldId[] = [
+  'quickBrowse.paragraphLabels',
+  'quickBrowse.representativeSentences',
+]
+
 export function requiredFieldsForDraft(stepId: string, draft: TrainingStructuredDraft | undefined): TrainingDraftFieldId[] {
   if (stepId === 'preview' && draft?.['preview.metadata'] !== undefined) return ['preview.metadata', 'preview.firstParagraph', 'preview.lastParagraph', 'preview.structure', 'preview.expectedQuestion', 'preview.unknown']
   if (stepId === 'three-points' && draft?.['threePoints.evidence'] !== undefined) return ['threePoints.evidence']
@@ -339,7 +342,10 @@ export function activeTrainingDraft(stepId: string, draft: TrainingStructuredDra
 
 export function normalizeTrainingStructuredDraft(value: unknown): TrainingStructuredDraft | undefined {
   if (!isRecord(value)) return undefined
-  const allowedFields = new Set(Object.values(STRUCTURED_FIELD_DEFINITIONS).flatMap((fields) => fields?.map(({ id }) => id) ?? []))
+  const allowedFields = new Set([
+    ...Object.values(STRUCTURED_FIELD_DEFINITIONS).flatMap((fields) => fields?.map(({ id }) => id) ?? []),
+    ...LEGACY_STRUCTURED_FIELDS,
+  ])
   const normalized: TrainingStructuredDraft = {}
   for (const field of allowedFields) {
     const raw = value[field]

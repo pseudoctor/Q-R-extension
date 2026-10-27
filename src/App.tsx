@@ -1049,9 +1049,6 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   const [threeSentenceDrafts, setThreeSentenceDrafts] = useState<TrainingSession['threeSentenceDrafts']>([])
   const [paragraphCursor, setParagraphCursor] = useState(0)
   const [busy, setBusy] = useState(false)
-  const [bridge, setBridge] = useState<{ requestId: string; prompt: string } | null>(null)
-  const [bridgeReply, setBridgeReply] = useState('')
-  const [bridgeError, setBridgeError] = useState('')
   const [error, setError] = useState('')
   const [hintVisible, setHintVisible] = useState(false)
   const [referenceAnswerBusy, setReferenceAnswerBusy] = useState(false)
@@ -1202,7 +1199,7 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   }, [articleId, session?.sessionId, historyView])
 
   const aiConfigured = aiLoaded && Boolean(aiSettings?.apiKey.trim())
-  const canGoBack = Boolean(session?.turns.length && !bridge && !reviewing)
+  const canGoBack = Boolean(session?.turns.length && !reviewing)
 
   const start = async () => {
     setBusy(true)
@@ -1221,7 +1218,7 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   }
 
   const jumpToTestStep = async (stepIndex: number) => {
-    if (!testMode || !session || busy || bridge || stepIndex === session.currentStep) return
+    if (!testMode || !session || busy || stepIndex === session.currentStep) return
     setBusy(true)
     setError('')
     const response = await sendExtensionMessage<TrainingSession>({
@@ -1239,9 +1236,6 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     applySession(response.data)
     setReinforcing(false)
     setReviewing(false)
-    setBridge(null)
-    setBridgeReply('')
-    setBridgeError('')
   }
 
   const currentParagraph = paragraphs[paragraphCursor]
@@ -1381,6 +1375,10 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
 
   const submit = async () => {
     if (!validateCurrentDraft()) return
+    if (!aiConfigured) {
+      setError(t('error.AI_NOT_CONFIGURED'))
+      return
+    }
     setBusy(true)
     setError('')
     const draftResponse = await persistCurrentDraft()
@@ -1394,21 +1392,6 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
       return
     }
 
-    if (!aiConfigured) {
-      const bridgeResponse = await sendExtensionMessage<{ requestId: string; prompt: string }>({
-        type: 'prepare-ai-bridge',
-        articleId,
-      })
-      setBusy(false)
-      if (bridgeResponse.ok) {
-        setBridge(bridgeResponse.data)
-        setBridgeReply('')
-        setBridgeError('')
-      } else {
-        setError(errorMessage(bridgeResponse.error))
-      }
-      return
-    }
     const aiResponse = await sendExtensionMessage<TrainingSession>({
       type: 'ai-grade',
       articleId,
@@ -1420,71 +1403,13 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     } else setError(errorMessage(aiResponse.error))
   }
 
-  const continueWithoutAi = async () => {
+  const saveDraftOnly = async () => {
     if (!validateCurrentDraft()) return
     setBusy(true)
     setError('')
     const saved = await persistCurrentDraft()
-    if (!saved) {
-      setBusy(false)
-      return
-    }
-    const frozen = await freezeCurrentAnswer(saved)
-    if (!frozen) {
-      setBusy(false)
-      return
-    }
-    const response = await sendExtensionMessage<TrainingSession>({
-      type: 'continue-training',
-      articleId,
-      sessionId: frozen.sessionId,
-      stepId: frozen.currentStepId,
-      draftRevision: frozen.draftRevision,
-      answerVersionId: frozen.answerVersionId,
-    })
     setBusy(false)
-    if (!response.ok) {
-      setError(errorMessage(response.error))
-      return
-    }
-    applySession(response.data)
-    setReinforcing(false)
-    setReviewing(false)
-  }
-
-  const copyBridgePrompt = async () => {
-    if (!bridge) return
-    try {
-      await navigator.clipboard.writeText(bridge.prompt)
-      setBridgeError(t('bridge.copied'))
-    } catch {
-      setBridgeError(t('bridge.copyFailed'))
-    }
-  }
-
-  const importBridgeFeedback = async () => {
-    if (!bridge || !bridgeReply.trim()) return
-    setBusy(true)
-    setBridgeError('')
-    const response = await sendExtensionMessage<TrainingSession>({
-      type: 'import-ai-feedback',
-      articleId,
-      requestId: bridge.requestId,
-      raw: bridgeReply,
-    })
-    setBusy(false)
-    if (!response.ok) {
-      setBridgeError(errorMessage(response.error))
-      return
-    }
-    if (reviewing) setSession((current) => mergeTrainingFeedback(current, response.data))
-    else {
-      applySession(response.data)
-      setReinforcing(false)
-    }
-    setBridge(null)
-    setBridgeReply('')
-    setBridgeError('')
+    setSaveStatus(saved ? 'saved' : 'error')
   }
 
   const saveReinforcement = async () => {
@@ -1534,9 +1459,6 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     setReinforcing(false)
     setReviewing(true)
     setReviewTurnIndex((session?.turns.length ?? 1) - 1)
-    setBridge(null)
-    setBridgeReply('')
-    setBridgeError('')
   }
 
   const editReviewedTurn = async () => {
@@ -1576,15 +1498,12 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
 
   const gradeSavedAnswer = async (turn: TrainingTurn) => {
     if (!session?.sessionId || !turn.answerVersionId || feedbackBusy) return
-    setFeedbackBusy(true)
-    setError('')
     if (!aiConfigured) {
-      const response = await sendExtensionMessage<{ requestId: string; prompt: string }>({ type: 'prepare-ai-bridge', articleId, sessionId: session.sessionId, answerVersionId: turn.answerVersionId })
-      setFeedbackBusy(false)
-      if (response.ok) { setBridge(response.data); setBridgeReply(''); setBridgeError('') }
-      else setError(errorMessage(response.error))
+      setError(t('error.AI_NOT_CONFIGURED'))
       return
     }
+    setFeedbackBusy(true)
+    setError('')
     const response = await sendExtensionMessage<TrainingSession>({ type: 'ai-grade', articleId, sessionId: session.sessionId, answerVersionId: turn.answerVersionId })
     setFeedbackBusy(false)
     if (!response.ok) { setError(errorMessage(response.error)); return }
@@ -1647,9 +1566,6 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     setThreeSentenceDrafts([])
     setParagraphCursor(0)
     setHintVisible(false)
-    setBridge(null)
-    setBridgeReply('')
-    setBridgeError('')
     setError('')
   }
 
@@ -1662,7 +1578,7 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   const argumentReady = step?.id !== 'toulmin-full' || Boolean(session?.argumentId?.trim())
   const structuredComplete = Boolean(step && isStructuredStep && isStructuredDraftComplete(step.id, structuredDraft) && argumentReady)
   const progressTotal = legacyReadOnly ? 8 : LESSON_STEPS.length
-  const progressValue = trainingProgress(session).recorded
+  const progressValue = trainingProgress(session).completed
   const displayedQuestion = session && step
     ? reinforcing ? session.currentQuestion : step.question
     : ''
@@ -1672,6 +1588,8 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   const priorContextStep = priorContextTurn?.stepId ? localizedSteps.find((candidate) => candidate.id === priorContextTurn.stepId) : undefined
   const completed = !editing && session?.flowId === 'reading-10' && trainingProgress(session).isComplete
   const needsReview = Boolean(!reinforcing && step && session?.stepRecords?.[step.id]?.status === 'needs-review')
+  const currentVersion = session?.answerVersionId ? session.answerVersions?.find((version) => version.id === session.answerVersionId) : undefined
+  const awaitingAiFeedback = Boolean(!reinforcing && currentVersion && currentVersion.stepId === session?.currentStepId && !currentVersion.feedback)
   const reviewTurn = reviewTurnIndex === null ? null : session?.turns[reviewTurnIndex] ?? null
   const transition = latestTurn?.feedback && latestTurn.stepId === 'preview'
     ? t('coach.transitionAfterPreview')
@@ -1737,11 +1655,10 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
           </div>
           {reviewTurn.feedback && <FeedbackCard feedback={reviewTurn.feedback} referenceAnswer={reviewTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(reviewTurn)} />}
           {reviewTurn.revisionReason && <p>{t('coach.revisionReason')}: {reviewTurn.revisionReason}</p>}
-          {!reviewTurn.feedback && <button className="secondary-button" type="button" disabled={feedbackBusy || Boolean(bridge)} onClick={() => void gradeSavedAnswer(reviewTurn)}>{feedbackBusy ? t('coach.grading') : aiConfigured ? t('coach.optionalFeedback') : t('coach.generateBridge')}</button>}
-          {bridge && <BridgeCard bridge={bridge} reply={bridgeReply} error={bridgeError} busy={busy} onCopy={() => void copyBridgePrompt()} onOpenChat={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')} onReply={setBridgeReply} onImport={() => void importBridgeFeedback()} />}
+          {!reviewTurn.feedback && <button className="secondary-button" type="button" disabled={feedbackBusy} onClick={() => void gradeSavedAnswer(reviewTurn)}>{feedbackBusy ? t('coach.grading') : t('coach.getFeedback')}</button>}
           <div className="round-actions">
-            <button className="secondary-button" type="button" onClick={() => { setReviewing(false); setReviewTurnIndex(null); setBridge(null) }} disabled={busy}>{t('coach.closeReview')}</button>
-            <button className="primary-button" type="button" onClick={() => void editReviewedTurn()} disabled={busy || Boolean(bridge) || session.stepRecords?.[reviewTurn.stepId ?? '']?.answerVersionId !== reviewTurn.answerVersionId}>{t('coach.editReviewed')}</button>
+            <button className="secondary-button" type="button" onClick={() => { setReviewing(false); setReviewTurnIndex(null) }} disabled={busy}>{t('coach.closeReview')}</button>
+            <button className="primary-button" type="button" onClick={() => void editReviewedTurn()} disabled={busy || session.stepRecords?.[reviewTurn.stepId ?? '']?.answerVersionId !== reviewTurn.answerVersionId}>{t('coach.editReviewed')}</button>
           </div>
         </div>
       ) : reinforcing ? (
@@ -1764,7 +1681,7 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
             </div>
             {canGoBack && <button className="secondary-button" type="button" onClick={() => void rewind()} disabled={busy}>{t('coach.back')}</button>}
             <button className="secondary-button" type="button" onClick={() => void reset()}>{t('coach.restart')}</button>
-            <button className="secondary-button" type="button" onClick={() => { setPracticeId(crypto.randomUUID()); setReinforcing(true); setAnswer(''); setHintVisible(false); setError(''); setBridge(null); setBridgeReply(''); setBridgeError('') }}>{t('coach.reinforce')}</button>
+            <button className="secondary-button" type="button" onClick={() => { setPracticeId(crypto.randomUUID()); setReinforcing(true); setAnswer(''); setHintVisible(false); setError('') }}>{t('coach.reinforce')}</button>
           </div>
           {latestTurn?.feedback && <FeedbackCard feedback={latestTurn.feedback} referenceAnswer={latestTurn.referenceAnswer} referenceAnswerBusy={referenceAnswerBusy} canGenerateReferenceAnswer={aiConfigured} onGenerateReferenceAnswer={() => void requestReferenceAnswer(latestTurn)} />}
         </>
@@ -1780,9 +1697,10 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
           {needsReview && (
             <div className="review-required" role="status">
               <p>{t('coach.needsReview')}</p>
-              <button className="secondary-button" type="button" onClick={() => void confirmStillApplies()} disabled={busy || Boolean(bridge)}>{t('coach.confirmStillApplies')}</button>
+              <button className="secondary-button" type="button" onClick={() => void confirmStillApplies()} disabled={busy}>{t('coach.confirmStillApplies')}</button>
             </div>
           )}
+          {awaitingAiFeedback && <p className="round-transition">{t('coach.awaitingAiFeedback')}</p>}
           {priorContextTurn && priorContextTurn.answer && priorContextTurn.stepId !== step.id && (
             <details className="prior-context" open={step.id === 'toulmin-full'}>
               <summary>{step.id === 'toulmin-full' ? t('coach.argumentContext') : t('coach.previousWork')}</summary>
@@ -1810,60 +1728,60 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
                     )}
                   </div>
                   <label className="paragraph-selection">
-                    <input type="checkbox" checked={currentParagraphSelected} onChange={() => toggleImportantParagraph(currentParagraph.paragraph)} disabled={busy || Boolean(bridge)} />
+                    <input type="checkbox" checked={currentParagraphSelected} onChange={() => toggleImportantParagraph(currentParagraph.paragraph)} disabled={busy} />
                     <span>{t('coach.markImportant')}</span>
                   </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.what')}</span>
-                    <textarea value={currentParagraphDraft?.what ?? ''} onChange={(event) => updateThreeSentenceField('what', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
+                    <textarea value={currentParagraphDraft?.what ?? ''} onChange={(event) => updateThreeSentenceField('what', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
                   </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.why')}</span>
                     <small>{t('coach.threeSentence.whyHint')}</small>
-                    <textarea value={currentParagraphDraft?.why ?? ''} onChange={(event) => updateThreeSentenceField('why', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
+                    <textarea value={currentParagraphDraft?.why ?? ''} onChange={(event) => updateThreeSentenceField('why', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
                   </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.takeaway')}</span>
-                    <textarea value={currentParagraphDraft?.takeaway ?? ''} onChange={(event) => updateThreeSentenceField('takeaway', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
+                    <textarea value={currentParagraphDraft?.takeaway ?? ''} onChange={(event) => updateThreeSentenceField('takeaway', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
                   </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.role')}</span>
-                    <textarea value={currentParagraphDraft?.role ?? ''} onChange={(event) => updateThreeSentenceField('role', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
+                    <textarea value={currentParagraphDraft?.role ?? ''} onChange={(event) => updateThreeSentenceField('role', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || !currentParagraphSelected} />
                   </label>
                   <label className="three-sentence-field">
                     <span>{t('coach.threeSentence.evidence')}</span>
                     <small>{t('coach.threeSentence.whyHint')}</small>
-                    <textarea value={currentParagraphDraft?.evidence ?? ''} onChange={(event) => updateThreeSentenceField('evidence', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || Boolean(bridge) || !currentParagraphSelected} />
+                    <textarea value={currentParagraphDraft?.evidence ?? ''} onChange={(event) => updateThreeSentenceField('evidence', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || !currentParagraphSelected} />
                   </label>
                   <div className="paragraph-navigation">
-                    <button className="secondary-button" type="button" onClick={() => moveToParagraph(paragraphCursor - 1)} disabled={busy || paragraphCursor === 0 || Boolean(bridge)}>{t('coach.previousParagraph')}</button>
-                    <button className="secondary-button" type="button" onClick={() => moveToParagraph(paragraphCursor + 1)} disabled={busy || paragraphCursor >= paragraphs.length - 1 || Boolean(bridge)}>{t('coach.nextParagraph')}</button>
+                    <button className="secondary-button" type="button" onClick={() => moveToParagraph(paragraphCursor - 1)} disabled={busy || paragraphCursor === 0}>{t('coach.previousParagraph')}</button>
+                    <button className="secondary-button" type="button" onClick={() => moveToParagraph(paragraphCursor + 1)} disabled={busy || paragraphCursor >= paragraphs.length - 1}>{t('coach.nextParagraph')}</button>
                   </div>
                 </>
               ) : <p className="round-instruction">{t('coach.paragraphIncomplete')}</p>}
             </div>
           ) : step.id === 'quick-browse' && (structuredDraft['quickBrowse.paragraphMap'] !== undefined || (!structuredDraft['quickBrowse.paragraphLabels'] && !structuredDraft['quickBrowse.representativeSentences'])) ? (
-            <BrowseTrainingForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} previewQuestion={effectiveTrainingTurns(session).find((turn) => turn.stepId === 'preview')?.structuredDraft?.['preview.expectedQuestion'] ?? ''} />
+            <BrowseTrainingForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy} onChange={updateStructuredField} previewQuestion={effectiveTrainingTurns(session).find((turn) => turn.stepId === 'preview')?.structuredDraft?.['preview.expectedQuestion'] ?? ''} />
           ) : step.id === 'questions' && (structuredDraft['questions.items'] !== undefined || !structuredDraft['questions.question']) ? (
-            <QuestionsTrainingForm draft={structuredDraft} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />
+            <QuestionsTrainingForm draft={structuredDraft} disabled={busy} onChange={updateStructuredField} />
           ) : isThreePointsStep ? (
             <>
-              <ThreePointsTrainingForm answer={answer} locale={locale} disabled={busy || Boolean(bridge)} onChange={(value) => {
+              <ThreePointsTrainingForm answer={answer} locale={locale} disabled={busy} onChange={(value) => {
                 setAnswer(value)
                 const evidence = readSummaryEvidence(structuredDraft['threePoints.evidence'])
                 if (evidence?.checked) updateStructuredField('threePoints.evidence', JSON.stringify({ ...evidence, checked: false }))
               }} />
-              {structuredDraft['threePoints.evidence'] !== undefined && session.articleSnapshot ? <SummaryEvidenceForm value={structuredDraft['threePoints.evidence']} snapshot={session.articleSnapshot} disabled={busy || Boolean(bridge)} onChange={(value) => updateStructuredField('threePoints.evidence', value)} /> : <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />}
+              {structuredDraft['threePoints.evidence'] !== undefined && session.articleSnapshot ? <SummaryEvidenceForm value={structuredDraft['threePoints.evidence']} snapshot={session.articleSnapshot} disabled={busy} onChange={(value) => updateStructuredField('threePoints.evidence', value)} /> : <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy} onChange={updateStructuredField} />}
             </>
           ) : isStructuredStep ? (
             <>
-              {step.id === 'preview' && structuredDraft['preview.metadata'] !== undefined && <MetadataReviewForm value={structuredDraft['preview.metadata']} disabled={busy || Boolean(bridge)} onChange={(value) => updateStructuredField('preview.metadata', value)} />}
+              {step.id === 'preview' && structuredDraft['preview.metadata'] !== undefined && <MetadataReviewForm value={structuredDraft['preview.metadata']} disabled={busy} onChange={(value) => updateStructuredField('preview.metadata', value)} />}
               {step.id === 'assumptions' && readQuestions(effectiveTrainingTurns(session).find((turn) => turn.stepId === 'questions')?.structuredDraft?.['questions.items']).filter((row) => row.selected).map((row) => <details key={row.id}><summary>{t('coach.questions.key')}: {row.question}</summary><p>{row.whyImportant}</p><p>{t('coach.field.answered')}: {row.answered}</p><p>{t('coach.field.unanswered')}: {row.unanswered}</p></details>)}
-              {['assumptions', 'toulmin-simple', 'toulmin-full'].includes(step.id) && <ApplicabilityForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />}
-              {structuredDraft['applicability.mode'] !== 'not-applicable' && <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy || Boolean(bridge)} onChange={updateStructuredField} />}
+              {['assumptions', 'toulmin-simple', 'toulmin-full'].includes(step.id) && <ApplicabilityForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy} onChange={updateStructuredField} />}
+              {structuredDraft['applicability.mode'] !== 'not-applicable' && <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy} onChange={updateStructuredField} />}
             </>
           ) : (
-            <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={8} maxLength={4000} disabled={busy || Boolean(bridge)} />
+            <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={8} maxLength={4000} disabled={busy} />
           )}
           {editing && <label className="structured-field">{t('coach.revisionReason')}<textarea value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} rows={2} disabled={busy} /></label>}
           <div className="round-footer">
@@ -1874,9 +1792,9 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
                 <button className="primary-button" type="button" disabled={busy || !revisionReason.trim()} onClick={() => void saveRevision()}>{t('coach.saveRevision')}</button>
               </> : <>
               {canGoBack && <button className="secondary-button" type="button" onClick={() => void rewind()} disabled={busy}>{t('coach.back')}</button>}
-              <button className="primary-button" type="button" onClick={() => void continueWithoutAi()} disabled={busy || Boolean(bridge) || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>{t('coach.saveContinue')}</button>
-              <button className="secondary-button" type="button" onClick={() => void submit()} disabled={busy || Boolean(bridge) || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>
-                {busy ? t('coach.saving') : aiConfigured ? t('coach.optionalFeedback') : t('coach.generateBridge')}
+              <button className="secondary-button" type="button" onClick={() => void saveDraftOnly()} disabled={busy || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>{t('coach.saveAnswer')}</button>
+              <button className="secondary-button" type="button" onClick={() => void submit()} disabled={busy || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>
+                {busy ? t('coach.grading') : aiConfigured ? t('coach.gradeAndContinue') : t('coach.configureAiToContinue')}
               </button>
               </>}
             </div>
@@ -1887,7 +1805,6 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
               {saveStatus === 'error' && !saveConflict && <button className="text-button" type="button" onClick={() => void retrySave()} disabled={busy}>{t('coach.retrySave')}</button>}
             </div>
           )}
-          {bridge && <BridgeCard bridge={bridge} reply={bridgeReply} error={bridgeError} busy={busy} onCopy={() => void copyBridgePrompt()} onOpenChat={() => window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer')} onReply={setBridgeReply} onImport={() => void importBridgeFeedback()} />}
         </div>
       ) : null}
       {error && <p className="inline-error" role="alert">{error}</p>}
@@ -1895,7 +1812,7 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
         <summary>{t('coach.history', { count: effectiveTrainingTurns(session, true).length })}</summary>
         {effectiveTrainingTurns(session, true).map((turn) => <div key={turn.answerVersionId ?? turn.stepId}>
           <strong>{t('coach.round', { number: turn.stepIndex + 1 })}{turn.feedback ? ` · ${turn.feedback.total} / 100` : ''}</strong>
-          <button type="button" className="text-button" disabled={busy || Boolean(bridge)} onClick={() => { setReviewing(true); setReviewTurnIndex(session.turns.indexOf(turn)) }}>{t('coach.reviewOnly')}</button>
+          <button type="button" className="text-button" disabled={busy} onClick={() => { setReviewing(true); setReviewTurnIndex(session.turns.indexOf(turn)) }}>{t('coach.reviewOnly')}</button>
         </div>)}
       </details>}
       {saveConflict && session && <div className="review-required" role="alert">
@@ -2235,41 +2152,6 @@ function FeedbackCard({
           </>
         ) : !canGenerateReferenceAnswer ? <p className="reference-answer-note">{t('feedback.referenceAnswerUnavailable')}</p> : null}
       </div>
-    </div>
-  )
-}
-
-type BridgeCardProps = {
-  bridge: { requestId: string; prompt: string }
-  reply: string
-  error: string
-  busy: boolean
-  onCopy: () => void
-  onOpenChat: () => void
-  onReply: (value: string) => void
-  onImport: () => void
-}
-
-function BridgeCard({ bridge, reply, error, busy, onCopy, onOpenChat, onReply, onImport }: BridgeCardProps) {
-  const { t } = useI18n()
-  return (
-    <div className="bridge-card">
-      <span className="section-kicker">{t('bridge.eyebrow')}</span>
-      <h4>{t('bridge.heading')}</h4>
-      <p>{t('bridge.description')}</p>
-      <div className="bridge-actions">
-        <button className="secondary-button" type="button" onClick={onCopy}>{t('bridge.copy')}</button>
-        <button className="text-button" type="button" onClick={onOpenChat}>{t('bridge.openChat')}</button>
-      </div>
-      <details className="bridge-prompt">
-        <summary>{t('bridge.viewPrompt')}</summary>
-        <textarea aria-label={t('bridge.promptAria')} readOnly value={bridge.prompt} rows={8} />
-      </details>
-      <textarea aria-label={t('bridge.feedbackAria')} value={reply} onChange={(event) => onReply(event.target.value)} placeholder={t('bridge.feedbackPlaceholder')} rows={6} maxLength={30_000} disabled={busy} />
-      {error && <p className="inline-error" role="alert">{error}</p>}
-      <button className="primary-button" type="button" onClick={onImport} disabled={busy || !reply.trim()}>
-        {busy ? t('bridge.validating') : t('bridge.import')}
-      </button>
     </div>
   )
 }

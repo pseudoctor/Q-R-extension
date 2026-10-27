@@ -154,7 +154,7 @@ export type TrainingAnswerVersion = {
   feedback?: AiFeedback
 }
 
-export type TrainingRequestKind = 'grade' | 'reference' | 'bridge'
+export type TrainingRequestKind = 'grade' | 'reference'
 
 export type TrainingRevision = Pick<TrainingTurn, 'answer' | 'structuredDraft' | 'importantParagraphs' | 'threeSentenceDrafts' | 'paragraphCursor'> & { reason: string }
 
@@ -327,6 +327,7 @@ export type ErrorCode =
   | 'AI_FEEDBACK_INVALID'
   | 'AI_ANSWER_INVALID'
   | 'TRAINING_ANSWER_FORMAT_INVALID'
+  | 'TRAINING_AI_REQUIRED'
   | 'TRAINING_CONFLICT'
   | 'TRAINING_READ_ONLY'
   | 'SHORTCUTS_PAGE_FAILED'
@@ -373,8 +374,6 @@ export type ExtensionMessage =
   | { type: 'ai-start'; articleId: string }
   | { type: 'ai-grade'; articleId: string; sessionId?: string; answerVersionId?: string }
   | { type: 'ai-reference-answer'; articleId: string; submittedAt: string }
-  | { type: 'prepare-ai-bridge'; articleId: string; sessionId?: string; answerVersionId?: string }
-  | { type: 'import-ai-feedback'; articleId: string; requestId: string; raw: string }
   | { type: 'save-article'; article: CaptureRecord }
 
 export type ExtensionResponse<T> =
