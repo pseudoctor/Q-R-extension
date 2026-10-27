@@ -1,4 +1,4 @@
-# Q&R | AI Critical Reading Coach
+# Q&R｜AI Critical Reading Coach
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -60,6 +60,8 @@ API keys are stored only in the extension's session storage for the current brow
 When saving settings or testing a connection, the extension requests optional network permission for the service URL you confirmed. If permission is denied, the related AI settings are not saved and no AI request is sent.
 
 ## Data, permissions, and privacy
+
+Read the full [Privacy Policy](PRIVACY.md).
 
 - Articles, training records, favorites, and data prepared for export are stored locally in `chrome.storage.local`. There is no built-in cloud sync.
 - API keys use `chrome.storage.session` and are not written to article records or ordinary persistent settings.

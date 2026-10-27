@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Build a Chrome/Edge browser-extension companion for 问读. The extension captures a selected passage or a user-requested article, stores reading sessions locally, and lets users continue Toulmin reading training without replacing the existing web application.
+Build a Chrome/Edge browser-extension companion for Q&R｜AI Critical Reading Coach. The extension captures a selected passage or a user-requested article, stores reading sessions locally, and lets users continue Toulmin reading training without replacing the existing web application.
 
 ## Domain Language
 

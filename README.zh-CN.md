@@ -1,8 +1,8 @@
-# 问读｜AI 批判性阅读教练
+# Q&R｜AI Critical Reading Coach
 
 [English](README.md) · **简体中文**
 
-问读是一个 Chrome/Edge Manifest V3 浏览器扩展：把正在阅读的文章带入训练页，帮助你完成阅读前预测、结构化批判性阅读和图尔敏论证分析，并把文章与训练记录保存在浏览器本地。
+Q&R｜AI Critical Reading Coach 是一个 Chrome/Edge Manifest V3 浏览器扩展：把正在阅读的文章带入训练页，帮助你完成阅读前预测、结构化批判性阅读和图尔敏论证分析，并把文章与训练记录保存在浏览器本地。
 
 AI 是可选能力。没有 AI 配置时，仍可以保存文章、完成本地训练、编辑回答和导出记录；配置 AI 后，扩展才会向你选择的模型服务发送训练所需的文章内容和回答。
 
@@ -60,6 +60,8 @@ API key 只保存在当前浏览器会话的扩展 session storage 中，关闭�
 保存设置或测试连接时，扩展会按用户确认的服务地址请求可选网络权限。拒绝权限时不会保存相关 AI 设置，也不会发送 AI 请求。
 
 ## 数据、权限与隐私
+
+完整政策见 [隐私政策](PRIVACY.md)。
 
 - 文章、训练记录、收藏和导出前的数据保存在浏览器本地 `chrome.storage.local` 中，不提供内置云同步。
 - API key 使用 `chrome.storage.session`，不写入文章记录或普通设置持久化数据。
@@ -163,7 +165,7 @@ release/q-and-r-ai-critical-reading-coach-v<version>.zip
 
 ## 支持项目
 
-如果问读对你有帮助，欢迎自愿支持项目维护。打赏不提供付费服务、优先支持或技术支持承诺。
+如果 Q&R 对你有帮助，欢迎自愿支持项目维护。打赏不提供付费服务、优先支持或技术支持承诺。
 
 <div align="center">
   <table>
