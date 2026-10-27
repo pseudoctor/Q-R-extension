@@ -623,6 +623,43 @@ export async function advanceTrainingSession(
   })
 }
 
+export async function advanceTrainingSessionPartial(
+  articleId: string,
+  locale: Locale = 'zh-CN',
+  expected?: { sessionId?: string; stepId?: string; draftRevision?: number },
+) {
+  return trainingMutation(async () => {
+    const session = await getWritableTrainingSession(articleId, locale)
+    if (!session || session.currentStep >= LESSON_STEPS.length - 1) return null
+    if (!matchesSessionIdentity(session, expected) || (expected?.stepId && expected.stepId !== session.currentStepId)) return null
+    const step = getLessonSteps(locale)[session.currentStep]
+    const nextStep = session.currentStep + 1
+    const nextStepDefinition = getLessonSteps(locale)[nextStep]
+    const nextRecord = nextStepDefinition ? session.stepRecords?.[nextStepDefinition.id] : undefined
+    const shouldRestore = nextRecord?.status === 'draft' || nextRecord?.status === 'needs-review'
+    const restored = shouldRestore ? restoreStepRecord(session, nextStep, locale) : { draft: '' }
+    const updated = {
+      ...session,
+      currentStep: nextStep,
+      currentStepId: nextStepDefinition?.id,
+      currentQuestion: nextStepDefinition?.question ?? '',
+      draft: restored.draft,
+      structuredDraft: restored.structuredDraft,
+      importantParagraphs: restored.importantParagraphs,
+      threeSentenceDrafts: restored.threeSentenceDrafts,
+      paragraphCursor: restored.paragraphCursor,
+      answerVersionId: shouldRestore ? nextRecord?.answerVersionId : undefined,
+      stepRecords: updateStepRecord(session.stepRecords, step.id, session, 'draft'),
+      draftRevision: (session.draftRevision ?? 0) + 1,
+      completedAt: undefined,
+      updatedAt: new Date().toISOString(),
+    }
+    const sessions = await readTrainingSessionsV3(locale)
+    await writeTrainingSessionsV3(replaceCurrentSession(sessions, updated))
+    return updated
+  })
+}
+
 export async function saveTrainingReinforcement(articleId: string, id: string, answer: string, locale: Locale = 'zh-CN', sessionId?: string) {
   return trainingMutation(async () => {
     const session = await getWritableTrainingSession(articleId, locale)

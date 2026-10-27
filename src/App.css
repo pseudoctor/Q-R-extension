@@ -1183,8 +1183,10 @@
 }
 
 .coach-card {
+  min-width: 0;
   max-height: calc(100vh - 36px);
   overflow-y: auto;
+  overflow-x: hidden;
   margin-top: 24px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
@@ -1314,7 +1316,28 @@
 }
 
 .coach-round {
+  min-width: 0;
   margin-top: 18px;
+}
+
+.coach-round fieldset,
+.structured-training-form,
+.structured-field-block,
+.browse-paragraph-card,
+.metadata-review-editor,
+.metadata-review-summary,
+.three-points-field,
+.three-sentence-field,
+.field-assist,
+.field-assist-result {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.coach-round legend {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .round-meta {
@@ -1751,6 +1774,70 @@
   gap: 12px;
 }
 
+.structured-field-block {
+  display: grid;
+  gap: 5px;
+}
+
+.field-assist {
+  display: grid;
+  gap: 6px;
+}
+
+.field-assist-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.field-assist-actions .text-button {
+  font-size: 11px;
+}
+
+.field-assist-result {
+  border-left: 2px solid var(--accent);
+  padding: 7px 9px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-assist-result strong {
+  display: block;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.field-assist-result p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.field-assist-result details {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.pending-step-panel {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 9px 11px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pending-step-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .three-points-form {
   display: grid;
   gap: 12px;
@@ -1792,6 +1879,8 @@
 .structured-field input,
 .structured-field textarea {
   box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1820,6 +1909,8 @@
 }
 
 .coach-round textarea {
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--line);
@@ -1832,6 +1923,14 @@
   line-height: 1.7;
   resize: vertical;
   outline: none;
+}
+
+.coach-round p,
+.coach-round q,
+.coach-round summary,
+.metadata-review-row dd {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .coach-round textarea:focus {

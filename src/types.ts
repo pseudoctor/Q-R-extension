@@ -156,6 +156,15 @@ export type TrainingAnswerVersion = {
 
 export type TrainingRequestKind = 'grade' | 'reference'
 
+export type TrainingFieldAssistMode = 'hint' | 'reference'
+
+export type TrainingFieldAssist = {
+  fieldId: string
+  mode: TrainingFieldAssistMode
+  answer: string
+  sources: AiSource[]
+}
+
 export type TrainingRevision = Pick<TrainingTurn, 'answer' | 'structuredDraft' | 'importantParagraphs' | 'threeSentenceDrafts' | 'paragraphCursor'> & { reason: string }
 
 export type TrainingRequestStatus = 'pending' | 'succeeded' | 'failed' | 'stale'
@@ -213,6 +222,8 @@ export type TrainingDraftFieldId =
   | 'quickBrowse.structure'
   | 'quickBrowse.paragraphMap'
   | 'quickBrowse.paragraphLabels'
+  | 'quickBrowse.first'
+  | 'quickBrowse.last'
   | 'quickBrowse.representativeSentences'
   | 'threePoints.sources'
   | 'questions.question'
@@ -364,6 +375,8 @@ export type ExtensionMessage =
   | { type: 'revise-training-turn'; articleId: string; turnIndex: number; sessionId: string; draftRevision: number; revision: TrainingRevision }
   | { type: 'save-training-reinforcement'; articleId: string; sessionId: string; id: string; answer: string }
   | { type: 'continue-training'; articleId: string; sessionId?: string; stepId?: string; draftRevision?: number; answerVersionId?: string }
+  | { type: 'continue-training-partial'; articleId: string; sessionId?: string; stepId?: string; draftRevision?: number }
+  | { type: 'ai-field-assist'; articleId: string; sessionId: string; stepId: string; draftRevision: number; fieldId: string; mode: TrainingFieldAssistMode; draft: string; structuredDraft?: TrainingStructuredDraft; importantParagraphs?: number[]; threeSentenceDrafts?: ThreeSentenceDraft[]; paragraphCursor?: number }
   | { type: 'edit-training-turn'; articleId: string; turnIndex: number; sessionId?: string; draftRevision?: number }
   | { type: 'rewind-training-session'; articleId: string }
   | { type: 'reset-training-session'; articleId: string }

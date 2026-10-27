@@ -1,5 +1,5 @@
 import { getArticleBlocks, numberArticleBlocks } from '../articles/format'
-import type { AiDimensionId, AiFeedback, AiReferenceAnswer, ArticleBlock, ArticleMetadata, Locale, TrainingSession, TrainingTurn } from '../types'
+import type { AiDimensionId, AiFeedback, AiReferenceAnswer, ArticleBlock, ArticleMetadata, Locale, TrainingFieldAssistMode, TrainingSession, TrainingTurn } from '../types'
 import { getLessonSteps, getNextLessonStepId, LESSON_STEPS, requiredFieldsForDraft, activeTrainingDraft, gradingRubric, assessmentScope, STRUCTURED_FIELD_DEFINITIONS, structuredFieldLimit } from '../training/lessons'
 import { translate } from '../i18n/messages'
 import { effectiveTrainingTurns } from '../training/state'
@@ -179,6 +179,108 @@ ${translate(locale, 'ai.jsonOnly')}`,
       additionalProperties: false,
     }),
   }
+}
+
+export function buildFieldAssistPrompt(
+  article: string,
+  title: string,
+  metadata: ArticleMetadata = emptyMetadata(),
+  session: TrainingSession,
+  fieldId: string,
+  mode: TrainingFieldAssistMode,
+  locale: Locale = 'zh-CN',
+  blocks?: ArticleBlock[],
+) {
+  const steps = getLessonSteps(locale)
+  const step = steps[Math.min(steps.length - 1, Math.max(0, session.currentStep))]
+  const sourceBlocks = getArticleBlocks(article, blocks)
+  const scope = assessmentScope(sourceBlocks, step.id, session.importantParagraphs)
+  const meaning = fieldMeaning(step.id, fieldId, locale)
+  if (!meaning) throw new Error('找不到当前训练字段。')
+  const instruction = translate(locale, mode === 'hint' ? 'ai.fieldAssistHint' : 'ai.fieldAssistReference')
+  const baseFieldId = fieldId.split(':')[0]
+  return {
+    system: `${translate(locale, 'ai.basePrompt')}
+${translate(locale, 'ai.stepPrefix')}“${step.name}”（${step.focus}，stepId: ${step.id}）。${instruction}
+${translate(locale, 'ai.referenceAnswerFormat')}
+${translate(locale, 'ai.jsonOnly')}`,
+    user: JSON.stringify({
+      stepId: step.id,
+      stepIndex: session.currentStep,
+      sessionId: session.sessionId ?? null,
+      draftRevision: session.draftRevision ?? 0,
+      fieldId,
+      fieldMeaning: meaning,
+      mode,
+      title,
+      metadata,
+      articleMetadataState: session.articleSnapshot?.metadataReview ?? initialMetadataReview({ title, metadata }),
+      assessmentScope: scope,
+      structuredDraft: activeTrainingDraft(step.id, session.structuredDraft),
+      currentFieldValue: session.structuredDraft?.[baseFieldId as keyof NonNullable<TrainingSession['structuredDraft']>] ?? '',
+      studentAnswer: session.draft,
+      importantParagraphs: session.importantParagraphs ?? [],
+      paragraphs: promptParagraphs(sourceBlocks, scope),
+      sourceBlocks: promptSourceBlocks(sourceBlocks, scope),
+      sourceCitationRule: '引用必须来自当前步骤允许使用的来源块，quote 必须是来源块中的连续文字。',
+    }),
+    responseFormat: buildJsonResponseFormat('training_field_assist', {
+      type: 'object',
+      properties: {
+        answer: { type: 'string', minLength: 20, maxLength: 2_000 },
+        sources: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: {
+            type: 'object',
+            properties: {
+              paragraph: { type: 'integer', minimum: 0 },
+              blockId: { type: 'string', minLength: 1, maxLength: 80 },
+              quote: { type: 'string', minLength: 2, maxLength: 320 },
+              comment: { type: 'string' },
+            },
+            required: ['paragraph', 'quote', 'comment'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['answer', 'sources'],
+      additionalProperties: false,
+    }),
+  }
+}
+
+function fieldMeaning(stepId: string, fieldId: string, locale: Locale) {
+  const baseFieldId = fieldId.split(':')[0]
+  if (stepId === 'three-sentence') {
+    const key: Record<string, string> = {
+      what: 'coach.threeSentence.what',
+      why: 'coach.threeSentence.why',
+      takeaway: 'coach.threeSentence.takeaway',
+      role: 'coach.threeSentence.role',
+      evidence: 'coach.threeSentence.evidence',
+    }
+    return key[baseFieldId] ? translate(locale, key[baseFieldId]) : null
+  }
+  if (stepId === 'quick-browse') {
+    const key: Record<string, string> = {
+      'quickBrowse.paragraphLabels': 'coach.field.paragraphLabels',
+      'quickBrowse.first': 'coach.browse.first',
+      'quickBrowse.last': 'coach.browse.last',
+    }
+    if (key[baseFieldId]) return translate(locale, key[baseFieldId])
+  }
+  if (stepId === 'three-points') {
+    if (/^threePoints\.point[1-3]$/.test(baseFieldId)) return translate(locale, 'coach.field.threePoints')
+    if (baseFieldId === 'threePoints.evidence.source') return translate(locale, 'coach.applicability.source')
+    if (baseFieldId === 'threePoints.evidence.quote') return translate(locale, 'coach.applicability.quote')
+  }
+  if (stepId === 'preview' && (baseFieldId === 'preview.metadata.status' || baseFieldId === 'preview.metadata.value')) {
+    return translate(locale, 'coach.metadata.heading')
+  }
+  const field = (STRUCTURED_FIELD_DEFINITIONS[stepId] ?? []).find((candidate) => candidate.id === baseFieldId)
+  return field ? translate(locale, field.labelKey) : null
 }
 
 function fieldDefinitions(stepId: string, draft: TrainingSession['structuredDraft'], locale: Locale) {

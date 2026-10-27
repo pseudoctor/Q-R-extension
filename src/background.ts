@@ -11,10 +11,12 @@ import type {
   Locale,
   SavedArticle,
   StorageState,
+  TrainingFieldAssist,
   TrainingSession,
 } from './types'
 import { createTrainingArticleSnapshot, getArticleBlocks, normalizeArticleBlocks, numberArticleBlocks } from './articles/format'
 import {
+  buildFieldAssistPrompt,
   buildGradePrompt,
   buildReferenceAnswerPrompt,
   buildStartPrompt,
@@ -38,6 +40,7 @@ import {
 import {
   commitTrainingFeedback,
   advanceTrainingSession,
+  advanceTrainingSessionPartial,
   beginTrainingRequest,
   confirmTrainingStep,
   createTrainingRequestId,
@@ -62,8 +65,8 @@ import {
 import { readAiSettings, writeAiSettings } from './storage/ai'
 import { readLocale, readTestMode, writeLocale, writeTestMode } from './storage/preferences'
 import { translate } from './i18n/messages'
-import { isTrainingDraftValid } from './training/lessons'
-import { LESSON_STEPS } from './training/lessons'
+import { isTrainingDraftNavigable, isTrainingDraftValid } from './training/lessons'
+import { getLessonSteps, LESSON_STEPS, STRUCTURED_FIELD_DEFINITIONS } from './training/lessons'
 
 const TRAINING_PAGE = 'training.html'
 
@@ -728,6 +731,54 @@ async function generateAiReferenceAnswer(articleId: string, submittedAt: string)
   return success(await getTrainingSession(articleId, locale) ?? completed ?? updated)
 }
 
+async function generateAiFieldAssist(
+  articleId: string,
+  message: Extract<ExtensionMessage, { type: 'ai-field-assist' }>,
+): Promise<ExtensionResponse<TrainingFieldAssist>> {
+  const locale = await readLocale()
+  const article = await getArticle(articleId)
+  const session = await getTrainingSession(articleId, locale)
+  if (!article || !session) return createError('INVALID_REQUEST', '没有找到这次训练。')
+  if (isLegacyTrainingSession(session) || isHistoricalTrainingSession(session)) return trainingReadOnlyError(locale)
+  if (session.sessionId !== message.sessionId || session.currentStepId !== message.stepId || (session.draftRevision ?? 0) !== message.draftRevision) {
+    return createError('TRAINING_CONFLICT', '当前答案已经变化，请刷新后重新生成提示。')
+  }
+  const step = getLessonSteps(locale)[session.currentStep]
+  const [baseFieldId, instanceId] = message.fieldId.split(':')
+  const allowedField = step?.id === 'three-sentence'
+    ? ['what', 'why', 'takeaway', 'role', 'evidence'].includes(baseFieldId) && !instanceId
+    : step?.id === 'quick-browse'
+      ? ['quickBrowse.structure'].includes(message.fieldId) || ['quickBrowse.paragraphLabels', 'quickBrowse.first', 'quickBrowse.last'].includes(baseFieldId) && Boolean(instanceId)
+      : step?.id === 'three-points'
+        ? /^threePoints\.point[1-3]$/.test(message.fieldId) || /^threePoints\.evidence\.(source|quote):[1-3]$/.test(message.fieldId) || (STRUCTURED_FIELD_DEFINITIONS[step.id] ?? []).some((field) => field.id === message.fieldId)
+        : step?.id === 'questions'
+          ? ['questions.category', 'questions.question', 'questions.relatedParagraphs', 'questions.whyImportant', 'questions.answered', 'questions.unanswered'].includes(baseFieldId) && Boolean(instanceId)
+          : step?.id === 'preview'
+            ? ['preview.metadata.status', 'preview.metadata.value'].includes(baseFieldId) && Boolean(instanceId) || (STRUCTURED_FIELD_DEFINITIONS[step.id] ?? []).some((field) => field.id === message.fieldId)
+            : (STRUCTURED_FIELD_DEFINITIONS[step?.id ?? ''] ?? []).some((field) => field.id === message.fieldId)
+  if (!step || !allowedField) return createError('INVALID_REQUEST', '找不到当前训练字段。')
+
+  const sourceBlocks = trainingSourceBlocks(article, session)
+  const prompt = buildFieldAssistPrompt(
+    session.articleSnapshot?.text ?? article.text,
+    session.articleSnapshot?.title ?? article.title,
+    session.articleSnapshot?.metadata ?? article.metadata,
+    { ...session, draft: message.draft, structuredDraft: message.structuredDraft, importantParagraphs: message.importantParagraphs, threeSentenceDrafts: message.threeSentenceDrafts, paragraphCursor: message.paragraphCursor },
+    message.fieldId,
+    message.mode,
+    locale,
+    sourceBlocks,
+  )
+  const completion = await requestAiJson(await readAiSettings(), prompt)
+  if (!completion.ok) return createError(completion.error.code, completion.error.message)
+  try {
+    const answer = validateAiReferenceAnswer(completion.data, session.articleSnapshot?.text ?? article.text, sourceBlocks, { stepIndex: session.currentStep, importantParagraphs: session.importantParagraphs })
+    return success({ fieldId: message.fieldId, mode: message.mode, answer: answer.answer, sources: answer.sources })
+  } catch (error) {
+    return createError('AI_ANSWER_INVALID', '模型服务返回的字段提示没有通过原文依据校验，请重试。', error instanceof Error ? error.message : undefined)
+  }
+}
+
 function isTrainingAnswerValid(article: SavedArticle, session: TrainingSession, locale: Locale = 'zh-CN') {
   if (!isTrainingDraftValid(session, locale)) return false
   if (session.currentStep === 2) {
@@ -816,10 +867,16 @@ async function handleMessage(
       ))
     }
     case 'set-training-step': {
-      if (!(await readTestMode())) return createError('INVALID_REQUEST', '请先在设置中开启测试模式。')
       const locale = await readLocale()
       const existing = await getTrainingSession(message.articleId, locale)
       if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      if (!(await readTestMode())) {
+        const targetStep = getLessonSteps(locale)[message.stepIndex]
+        const targetIndex = Number.isFinite(message.stepIndex) ? Math.trunc(message.stepIndex) : -1
+        if (!existing || targetIndex >= existing.currentStep || !targetStep || existing.stepRecords?.[targetStep.id]?.status !== 'draft') {
+          return createError('INVALID_REQUEST', '只能打开已经保存但尚未完成的步骤。')
+        }
+      }
       const session = await setTrainingStep(message.articleId, message.stepIndex, locale, {
         sessionId: message.sessionId,
         draftRevision: message.draftRevision,
@@ -901,6 +958,20 @@ async function handleMessage(
       })
       return session ? success(session) : createError('TRAINING_CONFLICT', '训练记录已在其他标签页更新，请刷新后重试。')
     }
+    case 'continue-training-partial': {
+      const locale = await readLocale()
+      const existing = await getTrainingSession(message.articleId, locale)
+      if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(locale)
+      if (!existing || !isTrainingDraftNavigable(existing, locale)) {
+        return createError('TRAINING_ANSWER_FORMAT_INVALID', '请先填写至少一项有效内容后再继续，未完成字段可以稍后补充。')
+      }
+      const session = await advanceTrainingSessionPartial(message.articleId, locale, {
+        sessionId: message.sessionId,
+        stepId: message.stepId,
+        draftRevision: message.draftRevision,
+      })
+      return session ? success(session) : createError('TRAINING_CONFLICT', '训练记录已在其他标签页更新，请刷新后重试。')
+    }
     case 'rewind-training-session': {
       const existing = await getTrainingSession(message.articleId, await readLocale())
       if (isLegacyTrainingSession(existing) || isHistoricalTrainingSession(existing)) return trainingReadOnlyError(await readLocale())
@@ -952,6 +1023,8 @@ async function handleMessage(
       return gradeAiTraining(message.articleId, message.answerVersionId, message.sessionId)
     case 'ai-reference-answer':
       return generateAiReferenceAnswer(message.articleId, message.submittedAt)
+    case 'ai-field-assist':
+      return generateAiFieldAssist(message.articleId, message)
     case 'save-article':
       return saveArticle(message.article)
     default:

@@ -15,6 +15,8 @@ import type {
   ErrorCode,
   SavedArticle,
   TrainingSession,
+  TrainingFieldAssist,
+  TrainingFieldAssistMode,
   TrainingDraftFieldId,
   TrainingStructuredDraft,
 } from './types'
@@ -44,7 +46,8 @@ import { createBrowseRows, readBrowseRows, PARAGRAPH_ROLES } from './training/br
 import { readQuestions, formatQuestions, QUESTION_CATEGORIES, type ReadingQuestion } from './training/questions'
 import { initialMetadataReview, emptySummaryEvidence, formatMetadataReview, readSummaryEvidence } from './training/evidence'
 import { MetadataReviewForm, SummaryEvidenceForm } from './training/EvidenceForms'
-import { isTrainingDraftValid, structuredFieldLimit, summaryPointLength, requiredFieldsForDraft } from './training/lessons'
+import { isTrainingDraftNavigable, isTrainingDraftValid, structuredFieldLimit, summaryPointLength, requiredFieldsForDraft } from './training/lessons'
+import { FieldAssist } from './training/FieldAssist'
 
 const extensionAvailable =
   typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id)
@@ -1052,6 +1055,9 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   const [error, setError] = useState('')
   const [hintVisible, setHintVisible] = useState(false)
   const [referenceAnswerBusy, setReferenceAnswerBusy] = useState(false)
+  const [fieldAssistBusy, setFieldAssistBusy] = useState<string | null>(null)
+  const [fieldAssists, setFieldAssists] = useState<Record<string, TrainingFieldAssist>>({})
+  const fieldAssistRequestToken = useRef(0)
   const [preReadConfirmed, setPreReadConfirmed] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [reviewing, setReviewing] = useState(false)
@@ -1107,6 +1113,9 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
       ? formatThreeSentenceAnswer(restoredDrafts.filter((draft) => nextImportantParagraphs.includes(draft.paragraph))) || next.draft
       : nextAnswer)
     setHintVisible(false)
+    setFieldAssistBusy(null)
+    setFieldAssists({})
+    fieldAssistRequestToken.current += 1
     setSaveStatus('idle')
     setReviewing(false)
     setReviewTurnIndex(null)
@@ -1218,7 +1227,9 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   }
 
   const jumpToTestStep = async (stepIndex: number) => {
-    if (!testMode || !session || busy || stepIndex === session.currentStep) return
+    const targetStepId = getLessonSteps(locale)[stepIndex]?.id
+    const canOpenSavedDraft = Boolean(targetStepId && session?.stepRecords?.[targetStepId]?.status === 'draft' && stepIndex < (session?.currentStep ?? 0))
+    if ((!testMode && !canOpenSavedDraft) || !session || busy || stepIndex === session.currentStep) return
     setBusy(true)
     setError('')
     const response = await sendExtensionMessage<TrainingSession>({
@@ -1236,6 +1247,33 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     applySession(response.data)
     setReinforcing(false)
     setReviewing(false)
+  }
+
+  const requestFieldAssist = async (fieldId: string, mode: TrainingFieldAssistMode) => {
+    if (!session?.sessionId || !session.currentStepId || !aiConfigured || fieldAssistBusy) return
+    const key = `${fieldId}:${mode}`
+    const requestToken = fieldAssistRequestToken.current
+    setFieldAssistBusy(key)
+    setError('')
+    const response = await sendExtensionMessage<TrainingFieldAssist>({
+      type: 'ai-field-assist',
+      articleId,
+      sessionId: session.sessionId,
+      stepId: session.currentStepId,
+      draftRevision: session.draftRevision ?? 0,
+      fieldId,
+      mode,
+      draft: answer,
+      ...(isStructuredStep ? { structuredDraft } : {}),
+      ...(isThreeSentenceStep ? { importantParagraphs, threeSentenceDrafts, paragraphCursor } : {}),
+    })
+    setFieldAssistBusy(null)
+    if (requestToken !== fieldAssistRequestToken.current) return
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return
+    }
+    setFieldAssists((current) => ({ ...current, [fieldId]: response.data }))
   }
 
   const currentParagraph = paragraphs[paragraphCursor]
@@ -1269,6 +1307,8 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     ].sort((left, right) => left.paragraph - right.paragraph)
     setThreeSentenceDrafts(next)
     setAnswer(formatThreeSentenceAnswer(next.filter((draft) => importantParagraphs.includes(draft.paragraph))))
+    setFieldAssists({})
+    fieldAssistRequestToken.current += 1
     setError('')
   }
 
@@ -1277,11 +1317,15 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     if (field === 'applicability.mode' && value === 'not-applicable' && step?.id === 'toulmin-simple' && !next['toulminSimple.argumentId']) next['toulminSimple.argumentId'] = session?.argumentId ?? crypto.randomUUID()
     setStructuredDraft(next)
     if (step?.id !== 'three-points') setAnswer(formatStructuredAnswer(step?.id ?? '', next, t))
+    setFieldAssists({})
+    fieldAssistRequestToken.current += 1
     setError('')
   }
 
   const moveToParagraph = (nextCursor: number) => {
     setParagraphCursor(Math.max(0, Math.min(nextCursor, Math.max(0, paragraphs.length - 1))))
+    setFieldAssists({})
+    fieldAssistRequestToken.current += 1
     setError('')
   }
 
@@ -1291,6 +1335,8 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
       : [...importantParagraphs, paragraph].sort((left, right) => left - right)
     setImportantParagraphs(next)
     setAnswer(formatThreeSentenceAnswer((threeSentenceDrafts ?? []).filter((draft) => next.includes(draft.paragraph))))
+    setFieldAssists({})
+    fieldAssistRequestToken.current += 1
     setError('')
   }
 
@@ -1373,6 +1419,14 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
     return true
   }
 
+  const validateNavigableDraft = () => {
+    if (!session || !isTrainingDraftNavigable({ ...session, draft: answer, structuredDraft, importantParagraphs, threeSentenceDrafts }, locale)) {
+      setError(t('coach.partialIncomplete'))
+      return false
+    }
+    return true
+  }
+
   const submit = async () => {
     if (!validateCurrentDraft()) return
     if (!aiConfigured) {
@@ -1404,12 +1458,37 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   }
 
   const saveDraftOnly = async () => {
-    if (!validateCurrentDraft()) return
+    if (!validateNavigableDraft()) return
     setBusy(true)
     setError('')
     const saved = await persistCurrentDraft()
     setBusy(false)
     setSaveStatus(saved ? 'saved' : 'error')
+  }
+
+  const saveAndContinuePartial = async () => {
+    if (!session || session.currentStep >= LESSON_STEPS.length - 1 || !validateNavigableDraft()) return
+    setBusy(true)
+    setError('')
+    const saved = await persistCurrentDraft()
+    if (!saved) {
+      setBusy(false)
+      return
+    }
+    const response = await sendExtensionMessage<TrainingSession>({
+      type: 'continue-training-partial',
+      articleId,
+      sessionId: saved.sessionId,
+      stepId: saved.currentStepId,
+      draftRevision: saved.draftRevision,
+    })
+    setBusy(false)
+    if (!response.ok) {
+      setError(errorMessage(response.error))
+      return
+    }
+    applySession(response.data)
+    setSaveStatus('saved')
   }
 
   const saveReinforcement = async () => {
@@ -1577,6 +1656,11 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
   const isStructuredStep = Boolean(step && !reinforcing && structuredFieldsForStep(step.id).length > 0)
   const argumentReady = step?.id !== 'toulmin-full' || Boolean(session?.argumentId?.trim())
   const structuredComplete = Boolean(step && isStructuredStep && isStructuredDraftComplete(step.id, structuredDraft) && argumentReady)
+  const currentStepComplete = isThreeSentenceStep ? threeSentenceComplete : isThreePointsStep ? threePointsComplete : isStructuredStep ? structuredComplete : answer.trim().length >= 5
+  const draftNavigable = Boolean(session && isTrainingDraftNavigable({ ...session, draft: answer, structuredDraft, importantParagraphs, threeSentenceDrafts }, locale))
+  const pendingStepIndexes = session
+    ? localizedSteps.map((candidate, index) => ({ candidate, index })).filter(({ candidate, index }) => index < session.currentStep && session.stepRecords?.[candidate.id]?.status === 'draft')
+    : []
   const progressTotal = legacyReadOnly ? 8 : LESSON_STEPS.length
   const progressValue = trainingProgress(session).completed
   const displayedQuestion = session && step
@@ -1673,6 +1757,18 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
       ) : completed ? (
         <>
           {testMode && <TestStepNavigator steps={localizedSteps} currentStep={session.currentStep} busy={busy} onJump={(stepIndex) => void jumpToTestStep(stepIndex)} />}
+          {pendingStepIndexes.length > 0 && (
+            <div className="pending-step-panel" role="status">
+              <span>{t('coach.pendingSteps')}</span>
+              <div className="pending-step-list">
+                {pendingStepIndexes.map(({ candidate, index }) => (
+                  <button className="text-button" type="button" key={candidate.id} onClick={() => void jumpToTestStep(index)} disabled={busy}>
+                    {t('coach.pendingStep', { number: index + 1, name: candidate.name })}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="coach-complete">
             <span className="complete-mark">✓</span>
             <div>
@@ -1731,28 +1827,43 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
                     <input type="checkbox" checked={currentParagraphSelected} onChange={() => toggleImportantParagraph(currentParagraph.paragraph)} disabled={busy} />
                     <span>{t('coach.markImportant')}</span>
                   </label>
-                  <label className="three-sentence-field">
-                    <span>{t('coach.threeSentence.what')}</span>
-                    <textarea value={currentParagraphDraft?.what ?? ''} onChange={(event) => updateThreeSentenceField('what', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
-                  </label>
-                  <label className="three-sentence-field">
-                    <span>{t('coach.threeSentence.why')}</span>
-                    <small>{t('coach.threeSentence.whyHint')}</small>
-                    <textarea value={currentParagraphDraft?.why ?? ''} onChange={(event) => updateThreeSentenceField('why', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
-                  </label>
-                  <label className="three-sentence-field">
-                    <span>{t('coach.threeSentence.takeaway')}</span>
-                    <textarea value={currentParagraphDraft?.takeaway ?? ''} onChange={(event) => updateThreeSentenceField('takeaway', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
-                  </label>
-                  <label className="three-sentence-field">
-                    <span>{t('coach.threeSentence.role')}</span>
-                    <textarea value={currentParagraphDraft?.role ?? ''} onChange={(event) => updateThreeSentenceField('role', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || !currentParagraphSelected} />
-                  </label>
-                  <label className="three-sentence-field">
-                    <span>{t('coach.threeSentence.evidence')}</span>
-                    <small>{t('coach.threeSentence.whyHint')}</small>
-                    <textarea value={currentParagraphDraft?.evidence ?? ''} onChange={(event) => updateThreeSentenceField('evidence', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || !currentParagraphSelected} />
-                  </label>
+                  <div className="three-sentence-field">
+                    <label>
+                      <span>{t('coach.threeSentence.what')}</span>
+                      <textarea value={currentParagraphDraft?.what ?? ''} onChange={(event) => updateThreeSentenceField('what', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
+                    </label>
+                    <FieldAssist fieldId="what" assist={fieldAssists.what} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={busy || !currentParagraphSelected} onRequest={requestFieldAssist} />
+                  </div>
+                  <div className="three-sentence-field">
+                    <label>
+                      <span>{t('coach.threeSentence.why')}</span>
+                      <small>{t('coach.threeSentence.whyHint')}</small>
+                      <textarea value={currentParagraphDraft?.why ?? ''} onChange={(event) => updateThreeSentenceField('why', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
+                    </label>
+                    <FieldAssist fieldId="why" assist={fieldAssists.why} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={busy || !currentParagraphSelected} onRequest={requestFieldAssist} />
+                  </div>
+                  <div className="three-sentence-field">
+                    <label>
+                      <span>{t('coach.threeSentence.takeaway')}</span>
+                      <textarea value={currentParagraphDraft?.takeaway ?? ''} onChange={(event) => updateThreeSentenceField('takeaway', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={3} maxLength={2000} disabled={busy || !currentParagraphSelected} />
+                    </label>
+                    <FieldAssist fieldId="takeaway" assist={fieldAssists.takeaway} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={busy || !currentParagraphSelected} onRequest={requestFieldAssist} />
+                  </div>
+                  <div className="three-sentence-field">
+                    <label>
+                      <span>{t('coach.threeSentence.role')}</span>
+                      <textarea value={currentParagraphDraft?.role ?? ''} onChange={(event) => updateThreeSentenceField('role', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || !currentParagraphSelected} />
+                    </label>
+                    <FieldAssist fieldId="role" assist={fieldAssists.role} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={busy || !currentParagraphSelected} onRequest={requestFieldAssist} />
+                  </div>
+                  <div className="three-sentence-field">
+                    <label>
+                      <span>{t('coach.threeSentence.evidence')}</span>
+                      <small>{t('coach.threeSentence.whyHint')}</small>
+                      <textarea value={currentParagraphDraft?.evidence ?? ''} onChange={(event) => updateThreeSentenceField('evidence', event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={2} maxLength={2000} disabled={busy || !currentParagraphSelected} />
+                    </label>
+                    <FieldAssist fieldId="evidence" assist={fieldAssists.evidence} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={busy || !currentParagraphSelected} onRequest={requestFieldAssist} />
+                  </div>
                   <div className="paragraph-navigation">
                     <button className="secondary-button" type="button" onClick={() => moveToParagraph(paragraphCursor - 1)} disabled={busy || paragraphCursor === 0}>{t('coach.previousParagraph')}</button>
                     <button className="secondary-button" type="button" onClick={() => moveToParagraph(paragraphCursor + 1)} disabled={busy || paragraphCursor >= paragraphs.length - 1}>{t('coach.nextParagraph')}</button>
@@ -1761,24 +1872,24 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
               ) : <p className="round-instruction">{t('coach.paragraphIncomplete')}</p>}
             </div>
           ) : step.id === 'quick-browse' && (structuredDraft['quickBrowse.paragraphMap'] !== undefined || (!structuredDraft['quickBrowse.paragraphLabels'] && !structuredDraft['quickBrowse.representativeSentences'])) ? (
-            <BrowseTrainingForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy} onChange={updateStructuredField} previewQuestion={effectiveTrainingTurns(session).find((turn) => turn.stepId === 'preview')?.structuredDraft?.['preview.expectedQuestion'] ?? ''} />
+            <BrowseTrainingForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy} onChange={updateStructuredField} previewQuestion={effectiveTrainingTurns(session).find((turn) => turn.stepId === 'preview')?.structuredDraft?.['preview.expectedQuestion'] ?? ''} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} />
           ) : step.id === 'questions' && (structuredDraft['questions.items'] !== undefined || !structuredDraft['questions.question']) ? (
-            <QuestionsTrainingForm draft={structuredDraft} disabled={busy} onChange={updateStructuredField} />
+            <QuestionsTrainingForm draft={structuredDraft} disabled={busy} onChange={updateStructuredField} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} />
           ) : isThreePointsStep ? (
             <>
               <ThreePointsTrainingForm answer={answer} locale={locale} disabled={busy} onChange={(value) => {
                 setAnswer(value)
                 const evidence = readSummaryEvidence(structuredDraft['threePoints.evidence'])
                 if (evidence?.checked) updateStructuredField('threePoints.evidence', JSON.stringify({ ...evidence, checked: false }))
-              }} />
-              {structuredDraft['threePoints.evidence'] !== undefined && session.articleSnapshot ? <SummaryEvidenceForm value={structuredDraft['threePoints.evidence']} snapshot={session.articleSnapshot} disabled={busy} onChange={(value) => updateStructuredField('threePoints.evidence', value)} /> : <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy} onChange={updateStructuredField} />}
+              }} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} />
+              {structuredDraft['threePoints.evidence'] !== undefined && session.articleSnapshot ? <SummaryEvidenceForm value={structuredDraft['threePoints.evidence']} snapshot={session.articleSnapshot} disabled={busy} onChange={(value) => updateStructuredField('threePoints.evidence', value)} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} /> : <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy} onChange={updateStructuredField} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} />}
             </>
           ) : isStructuredStep ? (
             <>
-              {step.id === 'preview' && structuredDraft['preview.metadata'] !== undefined && <MetadataReviewForm value={structuredDraft['preview.metadata']} disabled={busy} onChange={(value) => updateStructuredField('preview.metadata', value)} />}
+              {step.id === 'preview' && structuredDraft['preview.metadata'] !== undefined && <MetadataReviewForm value={structuredDraft['preview.metadata']} disabled={busy} onChange={(value) => updateStructuredField('preview.metadata', value)} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} />}
               {step.id === 'assumptions' && readQuestions(effectiveTrainingTurns(session).find((turn) => turn.stepId === 'questions')?.structuredDraft?.['questions.items']).filter((row) => row.selected).map((row) => <details key={row.id}><summary>{t('coach.questions.key')}: {row.question}</summary><p>{row.whyImportant}</p><p>{t('coach.field.answered')}: {row.answered}</p><p>{t('coach.field.unanswered')}: {row.unanswered}</p></details>)}
-              {['assumptions', 'toulmin-simple', 'toulmin-full'].includes(step.id) && <ApplicabilityForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy} onChange={updateStructuredField} />}
-              {structuredDraft['applicability.mode'] !== 'not-applicable' && <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy} onChange={updateStructuredField} />}
+              {['assumptions', 'toulmin-simple', 'toulmin-full'].includes(step.id) && <ApplicabilityForm blocks={JSON.parse(sourceBlocksJson)} draft={structuredDraft} disabled={busy} onChange={updateStructuredField} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} />}
+              {structuredDraft['applicability.mode'] !== 'not-applicable' && <StructuredTrainingForm draft={structuredDraft} stepId={step.id} disabled={busy} onChange={updateStructuredField} aiConfigured={aiConfigured} fieldAssists={fieldAssists} fieldAssistBusy={fieldAssistBusy} onRequestFieldAssist={requestFieldAssist} />}
             </>
           ) : (
             <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={t('coach.answerPlaceholder')} rows={8} maxLength={4000} disabled={busy} />
@@ -1792,7 +1903,10 @@ function TrainingCoach({ article, onSnapshot }: { article: SavedArticle; onSnaps
                 <button className="primary-button" type="button" disabled={busy || !revisionReason.trim()} onClick={() => void saveRevision()}>{t('coach.saveRevision')}</button>
               </> : <>
               {canGoBack && <button className="secondary-button" type="button" onClick={() => void rewind()} disabled={busy}>{t('coach.back')}</button>}
-              <button className="secondary-button" type="button" onClick={() => void saveDraftOnly()} disabled={busy || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>{t('coach.saveAnswer')}</button>
+              <button className="secondary-button" type="button" onClick={() => void saveDraftOnly()} disabled={busy || !draftNavigable}>{t('coach.saveAnswer')}</button>
+              {!currentStepComplete && session.currentStep < LESSON_STEPS.length - 1 && (
+                <button className="secondary-button" type="button" onClick={() => void saveAndContinuePartial()} disabled={busy || !draftNavigable}>{t('coach.saveAndContinuePartial')}</button>
+              )}
               <button className="secondary-button" type="button" onClick={() => void submit()} disabled={busy || answer.trim().length < 5 || (isThreeSentenceStep && !threeSentenceComplete) || (isThreePointsStep && !threePointsComplete) || (isStructuredStep && !structuredComplete)}>
                 {busy ? t('coach.grading') : aiConfigured ? t('coach.gradeAndContinue') : t('coach.configureAiToContinue')}
               </button>
@@ -1929,11 +2043,19 @@ function ThreePointsTrainingForm({
   locale,
   disabled,
   onChange,
+  aiConfigured,
+  fieldAssists,
+  fieldAssistBusy,
+  onRequestFieldAssist,
 }: {
   answer: string
   locale: string
   disabled: boolean
   onChange: (value: string) => void
+  aiConfigured: boolean
+  fieldAssists: Record<string, TrainingFieldAssist>
+  fieldAssistBusy: string | null
+  onRequestFieldAssist: (fieldId: string, mode: TrainingFieldAssistMode) => void
 }) {
   const { t } = useI18n()
   const points = parseThreePointsAnswer(answer)
@@ -1941,20 +2063,23 @@ function ThreePointsTrainingForm({
     <div className="three-points-form">
       <p className="structured-training-hint">{t('coach.threePointsHint')}</p>
       {points.map((point, index) => (
-        <label className="three-points-field" key={index}>
-          <span>{t('coach.threePointLabel', { number: index + 1 })}</span>
-          <input
-            value={point}
-            onChange={(event) => {
-              const next = [...points]
-              next[index] = event.target.value
-              onChange(next.join('\n'))
-            }}
-            maxLength={4000}
-            disabled={disabled}
-          />
+        <div className="three-points-field" key={index}>
+          <label>
+            <span>{t('coach.threePointLabel', { number: index + 1 })}</span>
+            <input
+              value={point}
+              onChange={(event) => {
+                const next = [...points]
+                next[index] = event.target.value
+                onChange(next.join('\n'))
+              }}
+              maxLength={4000}
+              disabled={disabled}
+            />
+          </label>
           <small>{summaryPointLength(point, locale)} / 15 {locale === 'en' ? 'words' : ''}</small>
-        </label>
+          <FieldAssist fieldId={`threePoints.point${index + 1}`} assist={fieldAssists[`threePoints.point${index + 1}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+        </div>
       ))}
     </div>
   )
@@ -1982,12 +2107,16 @@ function formatStructuredAnswer(
     .join('\n')
 }
 
-function BrowseTrainingForm({ blocks, draft, disabled, onChange, previewQuestion }: {
+function BrowseTrainingForm({ blocks, draft, disabled, onChange, previewQuestion, aiConfigured, fieldAssists, fieldAssistBusy, onRequestFieldAssist }: {
   blocks: import('./types').ArticleBlock[]
   draft: TrainingStructuredDraft
   disabled: boolean
   onChange: (field: TrainingDraftFieldId, value: string) => void
   previewQuestion: string
+  aiConfigured: boolean
+  fieldAssists: Record<string, TrainingFieldAssist>
+  fieldAssistBusy: string | null
+  onRequestFieldAssist: (fieldId: string, mode: TrainingFieldAssistMode) => void
 }) {
   const { t } = useI18n()
   const rows = draft['quickBrowse.paragraphMap'] === undefined ? createBrowseRows(blocks) : readBrowseRows(draft['quickBrowse.paragraphMap'])
@@ -1995,7 +2124,10 @@ function BrowseTrainingForm({ blocks, draft, disabled, onChange, previewQuestion
   const updateRow = (index: number, change: Partial<(typeof rows)[number]>) => onChange('quickBrowse.paragraphMap', JSON.stringify(rows.map((row, i) => i === index ? { ...row, ...change } : row)))
   return <div className="structured-training-form">
     {previewQuestion && <p className="browse-preview-question">{t('coach.field.expectedQuestion')}: {previewQuestion}</p>}
-    <label className="structured-field"><span>{t('coach.field.structureOverview')}</span><textarea value={draft['quickBrowse.structure'] ?? ''} maxLength={800} disabled={disabled} onChange={(event) => onChange('quickBrowse.structure', event.target.value)} /></label>
+    <div className="structured-field-block">
+      <label className="structured-field"><span>{t('coach.field.structureOverview')}</span><textarea value={draft['quickBrowse.structure'] ?? ''} maxLength={800} disabled={disabled} onChange={(event) => onChange('quickBrowse.structure', event.target.value)} /></label>
+      <FieldAssist fieldId="quickBrowse.structure" assist={fieldAssists['quickBrowse.structure']} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+    </div>
     <p className="browse-training-hint">{t('coach.browse.hint')}</p>
     <section className="browse-paragraph-section" aria-labelledby="browse-paragraph-heading">
       <div className="browse-paragraph-heading">
@@ -2008,9 +2140,18 @@ function BrowseTrainingForm({ blocks, draft, disabled, onChange, previewQuestion
       <fieldset disabled={disabled}>
       <legend className="browse-paragraph-legend">{t('feedback.paragraph', { number: row.paragraph })}</legend>
       <details><summary>{t('export.sourceText')}</summary><p>{numberArticleBlocks(blocks).find((item) => item.paragraph === row.paragraph)?.text}</p></details>
-      <label className="structured-field"><span>{t('coach.field.paragraphLabels')}</span><select value={row.role} onChange={(event) => updateRow(index, { role: event.target.value })}><option value="">—</option>{PARAGRAPH_ROLES.map((role) => <option value={role} key={role}>{t(`coach.browse.role.${role}`)}</option>)}</select></label>
-      <label className="structured-field"><span>{t('coach.browse.first')}</span><textarea value={row.first} onChange={(event) => updateRow(index, { first: event.target.value })} /></label>
-      <label className="structured-field"><span>{t('coach.browse.last')}</span><textarea value={row.last} onChange={(event) => updateRow(index, { last: event.target.value })} /></label>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.field.paragraphLabels')}</span><select value={row.role} onChange={(event) => updateRow(index, { role: event.target.value })}><option value="">—</option>{PARAGRAPH_ROLES.map((role) => <option value={role} key={role}>{t(`coach.browse.role.${role}`)}</option>)}</select></label>
+        <FieldAssist fieldId={`quickBrowse.paragraphLabels:${row.paragraph}`} assist={fieldAssists[`quickBrowse.paragraphLabels:${row.paragraph}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.browse.first')}</span><textarea value={row.first} onChange={(event) => updateRow(index, { first: event.target.value })} /></label>
+        <FieldAssist fieldId={`quickBrowse.first:${row.paragraph}`} assist={fieldAssists[`quickBrowse.first:${row.paragraph}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.browse.last')}</span><textarea value={row.last} onChange={(event) => updateRow(index, { last: event.target.value })} /></label>
+        <FieldAssist fieldId={`quickBrowse.last:${row.paragraph}`} assist={fieldAssists[`quickBrowse.last:${row.paragraph}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
       <label><input type="checkbox" checked={row.important} onChange={(event) => updateRow(index, { important: event.target.checked })} />{t('coach.browse.candidate')}</label>
     </fieldset></details>)}
       </div>
@@ -2018,10 +2159,14 @@ function BrowseTrainingForm({ blocks, draft, disabled, onChange, previewQuestion
   </div>
 }
 
-function QuestionsTrainingForm({ draft, disabled, onChange }: {
+function QuestionsTrainingForm({ draft, disabled, onChange, aiConfigured, fieldAssists, fieldAssistBusy, onRequestFieldAssist }: {
   draft: TrainingStructuredDraft
   disabled: boolean
   onChange: (field: TrainingDraftFieldId, value: string) => void
+  aiConfigured: boolean
+  fieldAssists: Record<string, TrainingFieldAssist>
+  fieldAssistBusy: string | null
+  onRequestFieldAssist: (fieldId: string, mode: TrainingFieldAssistMode) => void
 }) {
   const { t } = useI18n()
   const rows = readQuestions(draft['questions.items'])
@@ -2031,21 +2176,31 @@ function QuestionsTrainingForm({ draft, disabled, onChange }: {
     <p>{t('coach.questions.hint')}</p>
     {rows.map((row) => <fieldset key={row.id} disabled={disabled}>
       <legend>{t('coach.field.question')}</legend>
-      <label className="structured-field"><span>{t('coach.field.questionCategory')}</span><select value={row.category} onChange={(event) => update(row.id, { category: event.target.value })}>{QUESTION_CATEGORIES.map((category) => <option value={category} key={category}>{category.toUpperCase()}</option>)}</select></label>
-      <label className="structured-field"><span>{t('coach.field.question')}</span><textarea value={row.question} maxLength={800} onChange={(event) => update(row.id, { question: event.target.value })} /></label>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.field.questionCategory')}</span><select value={row.category} onChange={(event) => update(row.id, { category: event.target.value })}>{QUESTION_CATEGORIES.map((category) => <option value={category} key={category}>{category.toUpperCase()}</option>)}</select></label>
+        <FieldAssist fieldId={`questions.category:${row.id}`} assist={fieldAssists[`questions.category:${row.id}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.field.question')}</span><textarea value={row.question} maxLength={800} onChange={(event) => update(row.id, { question: event.target.value })} /></label>
+        <FieldAssist fieldId={`questions.question:${row.id}`} assist={fieldAssists[`questions.question:${row.id}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
       <label><input type="checkbox" checked={row.selected} disabled={!row.selected && rows.filter((item) => item.selected).length >= 2} onChange={(event) => update(row.id, { selected: event.target.checked })} />{t('coach.questions.key')}</label>
-      {row.selected && (['whyImportant', 'relatedParagraphs', 'answered', 'unanswered'] as const).map((field) => <label className="structured-field" key={field}><span>{t(`coach.field.${field}`)}</span><textarea value={row[field]} maxLength={800} onChange={(event) => update(row.id, { [field]: event.target.value })} /></label>)}
+      {row.selected && (['whyImportant', 'relatedParagraphs', 'answered', 'unanswered'] as const).map((field) => <div className="structured-field-block" key={field}><label className="structured-field"><span>{t(`coach.field.${field}`)}</span><textarea value={row[field]} maxLength={800} onChange={(event) => update(row.id, { [field]: event.target.value })} /></label><FieldAssist fieldId={`questions.${field}:${row.id}`} assist={fieldAssists[`questions.${field}:${row.id}`]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} /></div>)}
       <button className="text-button" type="button" onClick={() => save(rows.filter((item) => item.id !== row.id))}>{t('coach.questions.remove')}</button>
     </fieldset>)}
     <button className="secondary-button" type="button" disabled={disabled || rows.length >= 20} onClick={() => save([...rows, { id: crypto.randomUUID(), category: 'what', question: '', selected: false, whyImportant: '', relatedParagraphs: '', answered: '', unanswered: '' }])}>{t('coach.questions.add')}</button>
   </div>
 }
 
-function ApplicabilityForm({ blocks, draft, disabled, onChange }: {
+function ApplicabilityForm({ blocks, draft, disabled, onChange, aiConfigured, fieldAssists, fieldAssistBusy, onRequestFieldAssist }: {
   blocks: import('./types').ArticleBlock[]
   draft: TrainingStructuredDraft
   disabled: boolean
   onChange: (field: TrainingDraftFieldId, value: string) => void
+  aiConfigured: boolean
+  fieldAssists: Record<string, TrainingFieldAssist>
+  fieldAssistBusy: string | null
+  onRequestFieldAssist: (fieldId: string, mode: TrainingFieldAssistMode) => void
 }) {
   const { t } = useI18n()
   const selected = draft['applicability.mode'] === 'not-applicable'
@@ -2054,9 +2209,18 @@ function ApplicabilityForm({ blocks, draft, disabled, onChange }: {
     <label><input type="checkbox" checked={selected} onChange={(event) => onChange('applicability.mode', event.target.checked ? 'not-applicable' : 'applicable')} />{t('coach.applicability.none')}</label>
     {selected && <>
       <p>{t('coach.applicability.hint')}</p>
-      <label className="structured-field"><span>{t('coach.applicability.reason')}</span><textarea maxLength={800} value={draft['applicability.reason'] ?? ''} onChange={(event) => onChange('applicability.reason', event.target.value)} /></label>
-      <label className="structured-field"><span>{t('coach.applicability.source')}</span><select value={draft['applicability.sourceId'] ?? ''} onChange={(event) => onChange('applicability.sourceId', event.target.value)}><option value="">—</option>{blocks.flatMap((block) => { const text = 'text' in block ? block.text : block.type === 'list' ? block.items.join('\n') : block.type === 'image' ? block.alt : ''; return block.id && text ? [<option key={block.id} value={block.id}>{text.slice(0, 80)}</option>] : [] })}</select></label>
-      <label className="structured-field"><span>{t('coach.applicability.quote')}</span><textarea maxLength={800} value={draft['applicability.quote'] ?? ''} onChange={(event) => onChange('applicability.quote', event.target.value)} /></label>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.applicability.reason')}</span><textarea maxLength={800} value={draft['applicability.reason'] ?? ''} onChange={(event) => onChange('applicability.reason', event.target.value)} /></label>
+        <FieldAssist fieldId="applicability.reason" assist={fieldAssists['applicability.reason']} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.applicability.source')}</span><select value={draft['applicability.sourceId'] ?? ''} onChange={(event) => onChange('applicability.sourceId', event.target.value)}><option value="">—</option>{blocks.flatMap((block) => { const text = 'text' in block ? block.text : block.type === 'list' ? block.items.join('\n') : block.type === 'image' ? block.alt : ''; return block.id && text ? [<option key={block.id} value={block.id}>{text.slice(0, 80)}</option>] : [] })}</select></label>
+        <FieldAssist fieldId="applicability.sourceId" assist={fieldAssists['applicability.sourceId']} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
+      <div className="structured-field-block">
+        <label className="structured-field"><span>{t('coach.applicability.quote')}</span><textarea maxLength={800} value={draft['applicability.quote'] ?? ''} onChange={(event) => onChange('applicability.quote', event.target.value)} /></label>
+        <FieldAssist fieldId="applicability.quote" assist={fieldAssists['applicability.quote']} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+      </div>
     </>}
   </fieldset>
 }
@@ -2066,11 +2230,19 @@ function StructuredTrainingForm({
   draft,
   disabled,
   onChange,
+  aiConfigured,
+  fieldAssists,
+  fieldAssistBusy,
+  onRequestFieldAssist,
 }: {
   stepId: string
   draft: TrainingStructuredDraft
   disabled: boolean
   onChange: (field: TrainingDraftFieldId, value: string) => void
+  aiConfigured: boolean
+  fieldAssists: Record<string, TrainingFieldAssist>
+  fieldAssistBusy: string | null
+  onRequestFieldAssist: (fieldId: string, mode: TrainingFieldAssistMode) => void
 }) {
   const { t } = useI18n()
   const fields = (STRUCTURED_FIELD_DEFINITIONS[stepId] ?? []).filter((field) => requiredFieldsForDraft(stepId, draft).includes(field.id) && !field.id.startsWith('applicability.') && !['quickBrowse.paragraphMap', 'questions.items', 'preview.metadata', 'threePoints.evidence'].includes(field.id))
@@ -2080,14 +2252,17 @@ function StructuredTrainingForm({
       <p className="structured-training-hint">{t('coach.structuredHint')}</p>
       <div className="structured-field-list">
         {fields.map((field) => (
-          <label className="structured-field" key={field.id}>
-            <span>{t(field.labelKey)}</span>
-            {field.multiline ? (
-              <textarea value={draft[field.id] ?? ''} onChange={(event) => onChange(field.id, event.target.value)} rows={field.rows ?? 3} maxLength={structuredFieldLimit(field)} disabled={disabled} />
-            ) : (
-              <input value={draft[field.id] ?? ''} onChange={(event) => onChange(field.id, event.target.value)} maxLength={structuredFieldLimit(field)} disabled={disabled} />
-            )}
-          </label>
+          <div className="structured-field-block" key={field.id}>
+            <label className="structured-field">
+              <span>{t(field.labelKey)}</span>
+              {field.multiline ? (
+                <textarea value={draft[field.id] ?? ''} onChange={(event) => onChange(field.id, event.target.value)} rows={field.rows ?? 3} maxLength={structuredFieldLimit(field)} disabled={disabled} />
+              ) : (
+                <input value={draft[field.id] ?? ''} onChange={(event) => onChange(field.id, event.target.value)} maxLength={structuredFieldLimit(field)} disabled={disabled} />
+              )}
+            </label>
+            <FieldAssist fieldId={field.id} assist={fieldAssists[field.id]} aiConfigured={aiConfigured} busyKey={fieldAssistBusy} disabled={disabled} onRequest={onRequestFieldAssist} />
+          </div>
         ))}
       </div>
     </div>

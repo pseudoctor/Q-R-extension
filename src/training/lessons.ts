@@ -420,6 +420,14 @@ export function isLessonAnswerFormatValid(stepIndex: number, answer: string, loc
   return true
 }
 
+function isLessonAnswerFormatNavigable(answer: string, locale: Locale) {
+  const points = answer
+    .split(/\n+/)
+    .map((point) => point.replace(/^\s*(?:[-*•]|\d+[.)、])\s*/, '').trim())
+    .filter(Boolean)
+  return points.length > 0 && points.every((point) => summaryPointLength(point, locale) <= 15)
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -456,5 +464,47 @@ export function isTrainingDraftValid(session: import('../types').TrainingSession
   if (fields.length && (!isStructuredDraftComplete(step.id, session.structuredDraft) || fields.some((field) => (session.structuredDraft?.[field.id]?.length ?? 0) > structuredFieldLimit(field)))) return false
   if (step.id === 'toulmin-full' && !session.argumentId?.trim()) return false
   return step.id === 'three-points' ? isLessonAnswerFormatValid(session.currentStep, session.draft, locale) : fields.length > 0 || isLessonAnswerFormatValid(session.currentStep, session.draft, locale)
+}
+
+export function isTrainingDraftNavigable(session: import('../types').TrainingSession, locale: Locale = 'zh-CN') {
+  const step = LESSON_STEPS[session.currentStep]
+  if (!step || session.draft.trim().length < 5 || session.draft.length > STRUCTURED_ANSWER_MAX_LENGTH) return false
+  if (step.id === 'three-sentence') {
+    const selectedDrafts = (session.threeSentenceDrafts ?? []).filter((item) => (session.importantParagraphs ?? []).includes(item.paragraph))
+    return (session.importantParagraphs ?? []).length > 0 && selectedDrafts.some((item) =>
+      [item.what, item.why, item.takeaway, item.role, item.evidence].some((text) => text.trim())) && selectedDrafts.every((item) =>
+        [item.what, item.why, item.takeaway, item.role, item.evidence].every((text) => text.length <= 2000))
+  }
+  const fields = STRUCTURED_FIELD_DEFINITIONS[step.id] ?? []
+  if (step.id === 'quick-browse' && session.structuredDraft?.['quickBrowse.paragraphMap'] !== undefined && !areBrowseRowsValid(session.structuredDraft['quickBrowse.paragraphMap'], session.articleSnapshot?.blocks ?? [])) return false
+  if (fields.some((field) => (session.structuredDraft?.[field.id]?.length ?? 0) > structuredFieldLimit(field))) return false
+  if (step.id === 'three-points') return isLessonAnswerFormatNavigable(session.draft, locale)
+  if (!fields.length) return isLessonAnswerFormatNavigable(session.draft, locale)
+  const activeFields = requiredFieldsForDraft(step.id, session.structuredDraft)
+  return activeFields.some((fieldId) => hasMeaningfulStructuredValue(fieldId, session.structuredDraft?.[fieldId]))
+}
+
+function hasMeaningfulStructuredValue(fieldId: import('../types').TrainingDraftFieldId, value: string | undefined) {
+  if (!value?.trim() || fieldId === 'applicability.mode') return false
+  if (!['preview.metadata', 'quickBrowse.paragraphMap', 'questions.items', 'threePoints.evidence'].includes(fieldId)) return true
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown> | unknown[]
+    if (fieldId === 'questions.items' && Array.isArray(parsed)) {
+      return parsed.some((item) => isRecord(item) && ['question', 'whyImportant', 'relatedParagraphs', 'answered', 'unanswered'].some((key) => typeof item[key] === 'string' && item[key].trim()))
+    }
+    if (fieldId === 'quickBrowse.paragraphMap' && Array.isArray(parsed)) {
+      return parsed.some((item) => isRecord(item) && ['role', 'first', 'last'].some((key) => typeof item[key] === 'string' && item[key].trim()))
+    }
+    if (fieldId === 'preview.metadata' && isRecord(parsed)) {
+      const fields = parsed.fields
+      return Boolean(parsed.reviewed) || (isRecord(fields) && Object.values(fields).some((item) => isRecord(item) && typeof item.value === 'string' && item.value.trim()))
+    }
+    if (fieldId === 'threePoints.evidence' && isRecord(parsed) && Array.isArray(parsed.points)) {
+      return parsed.points.some((item) => isRecord(item) && (typeof item.blockId === 'string' && item.blockId.trim() || typeof item.quote === 'string' && item.quote.trim()))
+    }
+  } catch {
+    return false
+  }
+  return false
 }
 

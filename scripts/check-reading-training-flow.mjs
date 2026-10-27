@@ -9,6 +9,7 @@ const {
   getLessonSteps,
   getLegacyLessonSteps,
   getNextLessonStepId,
+  isTrainingDraftNavigable,
   isStructuredDraftComplete,
   isLessonAnswerFormatValid,
   normalizeTrainingStructuredDraft,
@@ -28,7 +29,7 @@ const {
   startTrainingSession,
 } = await server.ssrLoadModule('/src/storage/training.ts')
 const { readTestMode, writeTestMode } = await server.ssrLoadModule('/src/storage/preferences.ts')
-const { buildGradePrompt, buildReferenceAnswerPrompt, buildStartPrompt, validateAiFeedback, validateAiReferenceAnswer } = await server.ssrLoadModule('/src/ai/coach.ts')
+const { buildFieldAssistPrompt, buildGradePrompt, buildReferenceAnswerPrompt, buildStartPrompt, validateAiFeedback, validateAiReferenceAnswer } = await server.ssrLoadModule('/src/ai/coach.ts')
 const { buildReadingExportModel, generateReadingJson, generateReadingMarkdown } = await server.ssrLoadModule('/src/export/reading.ts')
 
 assert.deepEqual(LESSON_STEPS.map((step) => step.id), [
@@ -84,6 +85,46 @@ assert.equal(isLessonAnswerFormatValid(3, '第一点\n第二点\n第三点'), tr
 assert.equal(isLessonAnswerFormatValid(3, '第一点\n第二点'), false)
 assert.equal(isLessonAnswerFormatValid(3, 'one two three four five\none two three four five\none two three four five', 'en'), true)
 assert.equal(isLessonAnswerFormatValid(3, 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen\none two three four five\none two three four five', 'en'), false)
+const partialPreviewSession = {
+  currentStep: 0,
+  draft: '我预计文章会回答公共图书馆如何服务城市居民。',
+  structuredDraft: { 'preview.expectedQuestion': '公共图书馆如何服务城市居民？' },
+}
+assert.equal(isTrainingDraftNavigable(partialPreviewSession), true)
+assert.equal(isStructuredDraftComplete('preview', partialPreviewSession.structuredDraft), false)
+assert.equal(isTrainingDraftNavigable({ currentStep: 4, draft: '问题列表暂未填写。', structuredDraft: { 'questions.items': '[]' } }), false)
+assert.equal(isTrainingDraftNavigable({ currentStep: 4, draft: '我想知道作者为什么这样解释。', structuredDraft: { 'questions.items': JSON.stringify([{ id: 'q1', category: 'why', question: '作者为什么这样解释？', selected: false, whyImportant: '', relatedParagraphs: '', answered: '', unanswered: '' }]) } }), true)
+const fieldAssistPrompt = buildFieldAssistPrompt(
+  '第一段介绍背景。\n\n第二段补充证据。',
+  '文章标题',
+  { subtitle: '', author: '', source: '' },
+  {
+    articleId: 'assist-article',
+    flowId: 'reading-10',
+    currentStep: 1,
+    currentStepId: 'quick-browse',
+    currentQuestion: '请梳理文章结构。',
+    draft: '文章结构由背景和证据组成。',
+    draftRevision: 3,
+    turns: [],
+    startedAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    structuredDraft: { 'quickBrowse.structure': '文章结构由背景和证据组成。' },
+  },
+  'quickBrowse.first:1',
+  'hint',
+  'zh-CN',
+  [
+    { type: 'paragraph', id: 'block-1', text: '第一段介绍背景。' },
+    { type: 'paragraph', id: 'block-2', text: '第二段补充证据。' },
+  ],
+)
+const fieldAssistInput = JSON.parse(fieldAssistPrompt.user)
+assert.equal(fieldAssistInput.fieldId, 'quickBrowse.first:1')
+assert.equal(fieldAssistInput.mode, 'hint')
+assert.equal(fieldAssistInput.draftRevision, 3)
+assert.equal(fieldAssistPrompt.responseFormat.json_schema.name, 'training_field_assist')
+assert.match(JSON.stringify(fieldAssistInput.sourceBlocks), /第一段介绍背景/)
 assert.equal(isStructuredDraftComplete('questions', { 'questions.items': JSON.stringify([{ id: 'q1', category: 'why', question: '为什么会这样？', selected: true, whyImportant: '影响结论。', relatedParagraphs: '第2段', answered: '描述了现象。', unanswered: '未解释机制。' }]) }), true)
 assert.equal(isStructuredDraftComplete('questions', { 'questions.items': '[]' }), false)
 assert.equal(isStructuredDraftComplete('questions', {
