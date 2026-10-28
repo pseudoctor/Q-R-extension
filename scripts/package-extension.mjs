@@ -27,6 +27,7 @@ console.log(`Extension package created: ${output} (${size} bytes).`)
 function releaseEntries(manifest) {
   const entries = new Set([
     'manifest.json',
+    manifest.background?.service_worker,
     'index.html',
     manifest.side_panel?.default_path,
     'training.html',
